@@ -1,4 +1,5 @@
 
+import './index.css';
 import React, { useState, useEffect, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { 
@@ -937,7 +938,7 @@ const App = () => {
           <div className="flex items-center gap-3 w-full">
             <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg flex-shrink-0"><Menu size={24} className="text-slate-600" /></button>
             <div className="flex-1">
-              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
+              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'inventory' ? 'Inventário' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
               <p className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest hidden md:block">{currentOrg?.name} • Painel Administrativo</p>
             </div>
           </div>
@@ -1016,7 +1017,6 @@ const App = () => {
                             </div>
                         ))}
                     </div>
-                    {isAdmin && <button onClick={() => setActiveTab('history')} className="w-full py-4 text-[10px] font-black uppercase text-indigo-600 bg-indigo-50 rounded-2xl transition-all hover:bg-indigo-100">Ver Histórico Completo</button>}
                 </div>
 
                 {/* Audit Trail Preview */}
@@ -1047,37 +1047,83 @@ const App = () => {
                   <h2 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-3"><div className="w-2 h-6 bg-indigo-600 rounded-full"></div>{cat.name}</h2>
                   <button onClick={() => { setTargetId(cat.id); setModalType('item'); }} className="text-[10px] font-black bg-slate-100 px-4 py-2 rounded-lg hover:bg-slate-200 transition-all uppercase">+ ADICIONAR ITEM</button>
                 </div>
-                <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm overflow-x-auto">
-                  <table className="w-full text-left min-w-[700px]">
-                    <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
-                      <tr><th className="px-8 py-4">Produto</th><th className="px-8 py-4 text-center">Saldo</th><th className="px-8 py-4 text-center">Preço Un.</th><th className="px-8 py-4 text-center">Vencimento</th><th className="px-8 py-4 text-right">Ações</th></tr>
-                    </thead>
-                    <tbody className="divide-y text-sm text-slate-700">
-                      {items.filter(i => i.category_id === cat.id).map(item => {
-                        const expiryStatus = getExpiryStatus(item.expiry_date);
-                        return (
-                          <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-8 py-6 font-bold uppercase tracking-tight">{item.name} <span className="text-[10px] text-slate-400 block tracking-widest">{item.unit.toUpperCase()}</span></td>
-                            <td className={`px-8 py-6 text-center font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : ''}`}>{item.quantity}</td>
-                            <td className="px-8 py-6 text-center font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</td>
-                            <td className={`px-8 py-6 text-center font-bold ${expiryStatus === 'expired' ? 'text-rose-600' : expiryStatus === 'warning' ? 'text-amber-500' : 'text-slate-400'}`}>
+                <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm">
+                  {/* Desktop Table */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
+                        <tr><th className="px-8 py-4">Produto</th><th className="px-8 py-4 text-center">Saldo</th><th className="px-8 py-4 text-center">Preço Un.</th><th className="px-8 py-4 text-center">Vencimento</th><th className="px-8 py-4 text-right">Ações</th></tr>
+                      </thead>
+                      <tbody className="divide-y text-sm text-slate-700">
+                        {items.filter(i => i.category_id === cat.id).map(item => {
+                          const expiryStatus = getExpiryStatus(item.expiry_date);
+                          return (
+                            <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                              <td className="px-8 py-6 font-bold uppercase tracking-tight">{item.name} <span className="text-[10px] text-slate-400 block tracking-widest">{item.unit.toUpperCase()}</span></td>
+                              <td className={`px-8 py-6 text-center font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : ''}`}>{item.quantity}</td>
+                              <td className="px-8 py-6 text-center font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</td>
+                              <td className={`px-8 py-6 text-center font-bold ${expiryStatus === 'expired' ? 'text-rose-600' : expiryStatus === 'warning' ? 'text-amber-500' : 'text-slate-400'}`}>
+                                  {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString('pt-BR') : '-'}
+                              </td>
+                              <td className="px-8 py-6 text-right space-x-2">
+                                  <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
+                                  <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
+                                      const { error } = await supabase.from('products').delete().eq('id', item.id); 
+                                      if(!error) {
+                                          await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
+                                          await fetchAppData(); 
+                                      }
+                                  } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {/* Mobile Cards */}
+                  <div className="md:hidden space-y-3 p-4">
+                    {items.filter(i => i.category_id === cat.id).map(item => {
+                      const expiryStatus = getExpiryStatus(item.expiry_date);
+                      return (
+                        <div key={item.id} className="bg-slate-50 rounded-2xl p-4 space-y-3">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="font-bold uppercase text-sm tracking-tight">{item.name}</p>
+                              <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{item.unit.toUpperCase()}</p>
+                            </div>
+                            <div className="flex gap-2">
+                              <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
+                              <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
+                                  const { error } = await supabase.from('products').delete().eq('id', item.id); 
+                                  if(!error) {
+                                      await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
+                                      await fetchAppData(); 
+                                  }
+                              } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3 text-[10px]">
+                            <div>
+                              <p className="text-slate-400 font-black uppercase mb-1">Saldo</p>
+                              <p className={`font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : 'text-slate-900'}`}>{item.quantity}</p>
+                            </div>
+                            <div>
+                              <p className="text-slate-400 font-black uppercase mb-1">Preço</p>
+                              <p className="font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</p>
+                            </div>
+                            <div>
+                              <p className="text-slate-400 font-black uppercase mb-1">Validade</p>
+                              <p className={`font-bold ${expiryStatus === 'expired' ? 'text-rose-600' : expiryStatus === 'warning' ? 'text-amber-500' : 'text-slate-400'}`}>
                                 {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString('pt-BR') : '-'}
-                            </td>
-                            <td className="px-8 py-6 text-right space-x-2">
-                                <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
-                                <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
-                                    const { error } = await supabase.from('products').delete().eq('id', item.id); 
-                                    if(!error) {
-                                        await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
-                                        await fetchAppData(); 
-                                    }
-                                } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ))}
@@ -1100,30 +1146,65 @@ const App = () => {
                 <div key={cat.id} className="space-y-4">
                   <h2 className="text-xl font-black uppercase tracking-tighter flex items-center gap-3 px-4"><div className="w-1.5 h-5 bg-indigo-600 rounded-full"></div>{cat.name}</h2>
                   <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
-                        <tr><th className="px-8 py-6">Item</th><th className="px-8 py-6 text-center">Saldo Atual</th><th className="px-8 py-6 text-center">Data Validade</th><th className="px-8 py-6 text-center">Novo Saldo</th></tr>
-                      </thead>
-                      <tbody className="divide-y">
-                        {catItems.map(item => (
-                          <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-8 py-6 font-bold uppercase text-slate-700 tracking-tight">{item.name}</td>
-                            <td className="px-8 py-6 text-center text-slate-400 font-bold uppercase text-[10px]">{item.quantity} {item.unit}</td>
-                            <td className="px-8 py-6 text-center">
-                                <input type="date" defaultValue={item.expiry_date} onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {quantity: item.quantity}), expiry: e.target.value}}))} className="p-2 text-xs font-bold bg-slate-100 rounded-lg outline-none focus:ring-2 focus:ring-indigo-200 border-none uppercase shadow-inner"/>
-                            </td>
-                            <td className="px-8 py-6 text-center">
+                    {/* Desktop Table */}
+                    <div className="hidden md:block overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
+                          <tr><th className="px-8 py-6">Item</th><th className="px-8 py-6 text-center">Saldo Atual</th><th className="px-8 py-6 text-center">Data Validade</th><th className="px-8 py-6 text-center">Novo Saldo</th></tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {catItems.map(item => (
+                            <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                              <td className="px-8 py-6 font-bold uppercase text-slate-700 tracking-tight">{item.name}</td>
+                              <td className="px-8 py-6 text-center text-slate-400 font-bold uppercase text-[10px]">{item.quantity} {item.unit}</td>
+                              <td className="px-8 py-6 text-center">
+                                  <input type="date" defaultValue={item.expiry_date} onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {quantity: item.quantity}), expiry: e.target.value}}))} className="p-2 text-xs font-bold bg-slate-100 rounded-lg outline-none focus:ring-2 focus:ring-indigo-200 border-none uppercase shadow-inner"/>
+                              </td>
+                              <td className="px-8 py-6 text-center">
+                                <input 
+                                  type="number" 
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  defaultValue={item.quantity} 
+                                  onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {expiry: item.expiry_date}), quantity: Number(e.target.value)}}))} 
+                                  className="w-24 p-3 bg-indigo-50 border-2 border-indigo-100 rounded-xl font-black text-center text-indigo-600 focus:border-indigo-500 outline-none transition-all" 
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    {/* Mobile Cards */}
+                    <div className="md:hidden space-y-3 p-4">
+                      {catItems.map(item => (
+                        <div key={item.id} className="bg-slate-50 rounded-2xl p-4 space-y-3">
+                          <p className="font-bold uppercase text-sm tracking-tight">{item.name}</p>
+                          <div className="space-y-3">
+                            <div>
+                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Saldo Atual</p>
+                              <p className="text-[10px] text-slate-600 font-bold uppercase">{item.quantity} {item.unit}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Data Validade</p>
+                              <input type="date" defaultValue={item.expiry_date} onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {quantity: item.quantity}), expiry: e.target.value}}))} className="w-full p-2 text-xs font-bold bg-white border-2 border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-200"/>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Novo Saldo</p>
                               <input 
                                 type="number" 
+                                inputMode="numeric"
+                                pattern="[0-9]*"
                                 defaultValue={item.quantity} 
                                 onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {expiry: item.expiry_date}), quantity: Number(e.target.value)}}))} 
-                                className="w-24 p-3 bg-indigo-50 border-2 border-indigo-100 rounded-xl font-black text-center text-indigo-600 focus:border-indigo-500 outline-none transition-all" 
+                                className="w-full p-3 bg-indigo-50 border-2 border-indigo-100 rounded-xl font-black text-center text-indigo-600 focus:border-indigo-500 outline-none transition-all" 
                               />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               );
@@ -1195,40 +1276,73 @@ const App = () => {
         {activeTab === 'users' && isAdmin && (
           <div className="space-y-6 animate-in fade-in">
             <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden">
-              <div className="bg-slate-50 px-8 py-6 border-b flex justify-between items-center">
-                <h3 className="font-black uppercase tracking-tighter flex items-center gap-3"><Users size={20} className="text-indigo-600"/> Membros da Equipe</h3>
+              <div className="bg-slate-50 px-4 md:px-8 py-6 border-b flex flex-col md:flex-row gap-2 md:gap-0 justify-between items-start md:items-center">
+                <h3 className="font-black uppercase tracking-tighter flex items-center gap-3 text-sm md:text-base"><Users size={20} className="text-indigo-600"/> Membros da Equipe</h3>
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{team.length} usuários cadastrados</span>
               </div>
-              <table className="w-full text-left">
-                <thead className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase border-b">
-                  <tr><th className="px-8 py-6">Membro</th><th className="px-8 py-6">E-mail</th><th className="px-8 py-6">Cargo</th><th className="px-8 py-4 text-right">Ações</th></tr>
-                </thead>
-                <tbody className="divide-y text-sm">
-                  {team.map(member => (
-                    <tr key={member.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="px-8 py-6 flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-black uppercase text-[10px] shadow-sm">{member.name.charAt(0)}</div>
-                        <span className="font-bold text-slate-800 uppercase tracking-tight">{member.name}</span>
-                      </td>
-                      <td className="px-8 py-6 text-slate-500 font-medium">{member.email}</td>
-                      <td className="px-8 py-6">
-                        <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-tighter border ${member.role === 'admin' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-600 border-slate-100'}`}>
-                          {member.role === 'admin' ? <ShieldCheck size={10} className="inline mr-1 mb-0.5"/> : null}
-                          {member.role}
-                        </span>
-                      </td>
-                      <td className="px-8 py-6 text-right space-x-2">
-                        {currentProfile?.role === 'admin' && (
-                            <>
-                                <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
-                                <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
-                            </>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              
+              {/* Desktop Table */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase border-b">
+                    <tr><th className="px-8 py-6">Membro</th><th className="px-8 py-6">E-mail</th><th className="px-8 py-6">Cargo</th><th className="px-8 py-4 text-right">Ações</th></tr>
+                  </thead>
+                  <tbody className="divide-y text-sm">
+                    {team.map(member => (
+                      <tr key={member.id} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-8 py-6 flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-black uppercase text-[10px] shadow-sm">{member.name.charAt(0)}</div>
+                          <span className="font-bold text-slate-800 uppercase tracking-tight">{member.name}</span>
+                        </td>
+                        <td className="px-8 py-6 text-slate-500 font-medium">{member.email}</td>
+                        <td className="px-8 py-6">
+                          <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-tighter border ${member.role === 'admin' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-600 border-slate-100'}`}>
+                            {member.role === 'admin' ? <ShieldCheck size={10} className="inline mr-1 mb-0.5"/> : null}
+                            {member.role}
+                          </span>
+                        </td>
+                        <td className="px-8 py-6 text-right space-x-2">
+                          {currentProfile?.role === 'admin' && (
+                              <>
+                                  <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
+                                  <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                              </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile Cards */}
+              <div className="md:hidden divide-y">
+                {team.map(member => (
+                  <div key={member.id} className="p-4 hover:bg-slate-50/50 transition-colors">
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-black uppercase text-sm shadow-sm shrink-0">{member.name.charAt(0)}</div>
+                      <div className="flex-1 min-w-0 space-y-3">
+                        <div>
+                          <div className="font-bold text-slate-800 uppercase tracking-tight text-sm">{member.name}</div>
+                          <div className="text-xs text-slate-500 font-medium truncate">{member.email}</div>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter border ${member.role === 'admin' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-slate-50 text-slate-600 border-slate-100'}`}>
+                            {member.role === 'admin' ? <ShieldCheck size={10} className="inline mr-1 mb-0.5"/> : null}
+                            {member.role}
+                          </span>
+                          {currentProfile?.role === 'admin' && (
+                            <div className="flex gap-1">
+                              <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
+                              <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="p-8 bg-amber-50 rounded-[2rem] border border-amber-100 flex items-center gap-4 text-amber-800">
                 <Info size={24} className="shrink-0 opacity-50"/>
@@ -1242,13 +1356,15 @@ const App = () => {
         {activeTab === 'history' && isAdmin && (
           <div className="space-y-6 animate-in slide-in-from-right-4 duration-500">
             <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden">
-                <div className="bg-slate-50 px-8 py-6 border-b flex justify-between items-center">
-                    <h3 className="font-black uppercase tracking-tighter flex items-center gap-3"><FileText size={20} className="text-indigo-600"/> Registros Permanente do Sistema</h3>
-                    <div className="flex items-center gap-2 text-[9px] font-black text-slate-400 uppercase tracking-widest bg-white px-4 py-2 rounded-full border shadow-sm">
+                <div className="bg-slate-50 px-4 md:px-8 py-6 border-b flex flex-col md:flex-row gap-3 md:gap-0 justify-between items-start md:items-center">
+                    <h3 className="font-black uppercase tracking-tighter flex items-center gap-3 text-sm md:text-base"><FileText size={20} className="text-indigo-600"/> Registros Permanente do Sistema</h3>
+                    <div className="flex items-center gap-2 text-[9px] font-black text-slate-400 uppercase tracking-widest bg-white px-3 md:px-4 py-2 rounded-full border shadow-sm">
                         <ShieldCheck size={14} className="text-emerald-500"/> Auditoria Imutável Ativada
                     </div>
                 </div>
-                <div className="overflow-x-auto">
+                
+                {/* Desktop Table */}
+                <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-left">
                         <thead className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase border-b">
                             <tr>
@@ -1283,6 +1399,31 @@ const App = () => {
                             ))}
                         </tbody>
                     </table>
+                </div>
+
+                {/* Mobile Cards */}
+                <div className="md:hidden divide-y">
+                    {logs.length === 0 ? (
+                        <div className="px-4 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">
+                            Nenhuma atividade registrada no histórico ainda.
+                        </div>
+                    ) : logs.map(log => (
+                        <div key={log.id} className="p-4 hover:bg-slate-50/50 transition-colors border-l-4 border-l-indigo-600">
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-slate-500 font-bold uppercase text-[10px] tracking-tight">
+                                    <Clock size={12} className="text-slate-300"/>
+                                    {new Date(log.created_at).toLocaleString('pt-BR')}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center border border-white shadow-sm shrink-0"><User size={10} className="text-slate-400"/></div>
+                                    <span className="font-black text-[10px] uppercase tracking-tighter text-slate-600">{log.user_name}</span>
+                                </div>
+                                <span className="bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-tight border border-indigo-100 shadow-sm inline-block">
+                                    {log.description}
+                                </span>
+                            </div>
+                        </div>
+                    ))}
                 </div>
             </div>
             <div className="p-8 bg-indigo-50 rounded-[2rem] border border-indigo-100 flex items-center gap-4 text-indigo-800 shadow-sm">
@@ -1420,39 +1561,46 @@ const App = () => {
                     </div>
                     
                     {newListItems.map((item, idx) => (
-                        <div key={idx} className="flex gap-2 items-center animate-in slide-in-from-left-2">
+                        <div key={idx} className="flex flex-col md:flex-row gap-2 items-stretch md:items-center animate-in slide-in-from-left-2">
                             <input readOnly value={item.name} className="flex-1 p-3 bg-slate-50 border rounded-xl text-xs font-bold uppercase" />
-                            <input readOnly value={item.quantity} className="w-20 p-3 bg-slate-50 border rounded-xl text-xs font-black text-center" />
-                            <button type="button" onClick={() => setNewListItems(p => p.filter((_, i) => i !== idx))} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"><Trash2 size={16}/></button>
+                            <div className="flex gap-2">
+                                <input readOnly value={item.quantity} className="flex-1 md:w-20 p-3 bg-slate-50 border rounded-xl text-xs font-black text-center" />
+                                <button type="button" onClick={() => setNewListItems(p => p.filter((_, i) => i !== idx))} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all shrink-0"><Trash2 size={16}/></button>
+                            </div>
                         </div>
                     ))}
                     
-                    <div className="flex gap-2 pt-2">
-                      <input
-                        list="products-suggestions"
-                        value={newItemName}
-                        onChange={(e) => setNewItemName(e.target.value)}
-                        className="flex-1 p-3 bg-white border-2 rounded-xl text-xs font-bold uppercase outline-none focus:border-indigo-300"
-                        placeholder="Nome do Produto"
-                      />
+                    <div className="flex flex-col md:flex-row gap-2 pt-2">
                       <datalist id="products-suggestions">
                         {productNameSuggestions.map(productName => (
                         <option key={productName} value={productName} />
                         ))}
                       </datalist>
                       <input
-                        value={newItemQty}
-                        onChange={(e) => setNewItemQty(e.target.value)}
-                        className="w-20 p-3 bg-white border-2 rounded-xl text-xs font-black text-center outline-none focus:border-indigo-300"
-                        placeholder="Qtd"
+                        key={`product-input-${newListItems.length}`}
+                        list="products-suggestions"
+                        value={newItemName}
+                        onChange={(e) => setNewItemName(e.target.value)}
+                        className="flex-1 p-3 bg-white border-2 rounded-xl text-xs font-bold uppercase outline-none focus:border-indigo-300"
+                        placeholder="Nome do Produto"
                       />
-                        <button 
-                            type="button" 
-                        onClick={addManualShoppingListItem}
-                            className="p-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-md"
-                        >
-                            <Plus size={16}/>
-                        </button>
+                      <div className="flex gap-2">
+                          <input
+                            value={newItemQty}
+                            onChange={(e) => setNewItemQty(e.target.value)}
+                            className="flex-1 md:w-20 p-3 bg-white border-2 rounded-xl text-xs font-black text-center outline-none focus:border-indigo-300"
+                            placeholder="Qtd"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                          />
+                          <button 
+                              type="button" 
+                          onClick={addManualShoppingListItem}
+                              className="p-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-md shrink-0"
+                          >
+                              <Plus size={16}/>
+                          </button>
+                      </div>
                     </div>
                 </div>
             </div>
