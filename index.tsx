@@ -44,7 +44,8 @@ import {
   ShoppingCart,
   Send,
   Shield,
-  LineChart
+  LineChart,
+  Menu
 } from 'lucide-react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from "@google/genai";
@@ -83,6 +84,7 @@ const App = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
   const [isSaving, setIsSaving] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loginView, setLoginView] = useState<'login' | 'register' | 'waiting-confirmation'>('login');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPass, setLoginPass] = useState('');
@@ -906,8 +908,11 @@ const App = () => {
 
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-slate-50">
+      {/* Backdrop para mobile */}
+      {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-40 md:hidden" onClick={() => setSidebarOpen(false)} />}
+      
       {/* Sidebar */}
-      <aside className="w-full md:w-72 bg-white border-r p-8 flex flex-col gap-10 sticky top-0 h-screen">
+      <aside className={`fixed md:relative w-full md:w-72 bg-white border-r p-8 flex flex-col gap-10 z-50 md:sticky md:top-0 md:h-screen md:overflow-y-auto transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="text-indigo-600 font-black text-3xl flex items-center gap-3"><Package /> SmartStock</div>
         <nav className="flex flex-col gap-2 flex-1">
           <button onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><LayoutDashboard size={20}/> Painel</button>
@@ -929,9 +934,12 @@ const App = () => {
       {/* Content */}
       <main className="flex-1 p-6 md:p-10 space-y-10 overflow-y-auto">
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div>
-            <h1 className="text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{currentOrg?.name} • Painel Administrativo</p>
+          <div className="flex items-center gap-4 w-full">
+            <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg"><Menu size={24} className="text-slate-600" /></button>
+            <div>
+              <h1 className="text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{currentOrg?.name} • Painel Administrativo</p>
+            </div>
           </div>
           <div className="flex gap-3">
             {activeTab === 'inventory' && <button onClick={() => setModalType('category')} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"><Plus size={18} className="inline mr-2"/> CATEGORIA</button>}
