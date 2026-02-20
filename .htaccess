@@ -1,0 +1,16 @@
+RewriteEngine On
+RewriteBase /smart_stock/
+
+# Permite acesso direto ao conteúdo da pasta dist
+RewriteRule ^dist/ - [L]
+
+# Mapeia assets gerados pelo Vite
+RewriteRule ^assets/(.*)$ dist/assets/$1 [L,NC]
+
+# Entrada principal
+RewriteRule ^$ dist/index.html [L]
+
+# Fallback para rotas SPA
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . dist/index.html [L]
