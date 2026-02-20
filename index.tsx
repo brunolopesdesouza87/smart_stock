@@ -909,10 +909,10 @@ const App = () => {
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-slate-50">
       {/* Backdrop para mobile */}
-      {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-40 md:hidden" onClick={() => setSidebarOpen(false)} />}
+      {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />}
       
       {/* Sidebar */}
-      <aside className={`fixed md:relative w-full md:w-72 bg-white border-r p-8 flex flex-col gap-10 z-50 md:sticky md:top-0 md:h-screen md:overflow-y-auto transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+      <aside className={`fixed left-0 top-0 h-screen md:relative md:h-auto w-64 md:w-72 bg-white border-r p-8 flex flex-col gap-10 z-40 md:sticky md:top-0 md:h-screen md:overflow-y-auto transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="text-indigo-600 font-black text-3xl flex items-center gap-3"><Package /> SmartStock</div>
         <nav className="flex flex-col gap-2 flex-1">
           <button onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><LayoutDashboard size={20}/> Painel</button>
@@ -932,13 +932,13 @@ const App = () => {
       </aside>
 
       {/* Content */}
-      <main className="flex-1 p-6 md:p-10 space-y-10 overflow-y-auto">
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div className="flex items-center gap-4 w-full">
-            <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg"><Menu size={24} className="text-slate-600" /></button>
-            <div>
-              <h1 className="text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{currentOrg?.name} • Painel Administrativo</p>
+      <main className="flex-1 w-full md:flex-1 p-4 md:p-10 space-y-10 overflow-y-auto md:overflow-y-auto min-h-screen">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 md:gap-4 sticky top-0 bg-slate-50 z-10 py-2 md:py-0 md:sticky md:top-0 md:bg-transparent md:z-auto">
+          <div className="flex items-center gap-3 w-full">
+            <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg flex-shrink-0"><Menu size={24} className="text-slate-600" /></button>
+            <div className="flex-1">
+              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
+              <p className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest hidden md:block">{currentOrg?.name} • Painel Administrativo</p>
             </div>
           </div>
           <div className="flex gap-3">
