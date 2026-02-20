@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+body { 
+  font-family: 'Inter', sans-serif; 
+}
+
+.glass { 
+  background: rgba(255, 255, 255, 0.95); 
+  backdrop-filter: blur(10px); 
+}
+
+::-webkit-scrollbar { 
+  width: 6px; 
+}
+
+::-webkit-scrollbar-track { 
+  background: #f1f1f1; 
+}
+
+::-webkit-scrollbar-thumb { 
+  background: #cbd5e1; 
+  border-radius: 10px; 
+}
