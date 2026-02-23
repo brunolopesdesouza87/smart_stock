@@ -46,7 +46,14 @@ import {
   Send,
   Shield,
   LineChart,
-  Menu
+  Menu,
+  Eye,
+  EyeOff,
+  Download,
+  Barcode,
+  Search,
+  Lock,
+  Image as ImageIcon
 } from 'lucide-react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from "@google/genai";
@@ -59,15 +66,16 @@ const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // --- Tipos ---
 type Role = 'admin' | 'staff';
-interface Organization { id: string; name: string; }
+interface Organization { id: string; name: string; cnpj?: string; address?: string; city?: string; state?: string; zip_code?: string; phone?: string; contact_person?: string; email?: string; website?: string; logo_url?: string; }
 interface UserProfile { id: string; organization_id: string; email: string; role: Role; name: string; }
 interface Category { id: string; organization_id: string; name: string; }
-interface StockItem { id: string; organization_id: string; category_id: string; name: string; unit: string; min_stock: number; quantity: number; price: number; last_count_date: string; expiry_date?: string; last_responsible: string; }
+interface StockItem { id: string; organization_id: string; category_id: string; name: string; barcode?: string; unit: string; min_stock: number; quantity: number; price: number; last_count_date: string; expiry_date?: string; image_url?: string; last_responsible: string; }
 interface StockMovement { id: string; organization_id: string; item_id: string; item_name: string; type: 'in' | 'out' | 'set'; quantity: number; user_name: string; date: string; }
 interface SystemLog { id: string; organization_id: string; user_name: string; description: string; created_at: string; }
 interface ShoppingList { id: string; organization_id: string; requester_name: string; status: 'pending' | 'completed'; created_at: string; completed_at?: string; items?: ShoppingListItem[]; }
 interface ShoppingListItem { id: string; list_id: string; product_name: string; quantity: string; is_bought: boolean; }
-type AppTab = 'dashboard' | 'inventory' | 'quick-entry' | 'shopping-list' | 'users' | 'history';
+interface Supplier { id: string; organization_id: string; name: string; contact_name?: string; phone?: string; email?: string; document?: string; notes?: string; created_at?: string; }
+type AppTab = 'dashboard' | 'inventory' | 'quick-entry' | 'shopping-list' | 'users' | 'suppliers' | 'history' | 'company';
 
 const App = () => {
   const [dbStatus, setDbStatus] = useState<'checking' | 'connected' | 'setup_needed' | 'error'>('checking');
@@ -80,33 +88,68 @@ const App = () => {
   const [items, setItems] = useState<StockItem[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [team, setTeam] = useState<UserProfile[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [logs, setLogs] = useState<SystemLog[]>([]);
+  const [historyLogs, setHistoryLogs] = useState<SystemLog[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [shoppingLists, setShoppingLists] = useState<ShoppingList[]>([]);
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
   const [isSaving, setIsSaving] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [loginView, setLoginView] = useState<'login' | 'register' | 'waiting-confirmation'>('login');
+  const [loginView, setLoginView] = useState<'login' | 'register' | 'waiting-confirmation' | 'reset-password'>('login');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPass, setLoginPass] = useState('');
+  const [showLoginPass, setShowLoginPass] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [showNewUserPass, setShowNewUserPass] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [itemImageFile, setItemImageFile] = useState<File | null>(null);
+  const [itemImagePreview, setItemImagePreview] = useState<string | null>(null);
+  const [isEditingCompany, setIsEditingCompany] = useState(false);
+  const [historyUserFilter, setHistoryUserFilter] = useState('all');
+  const [historyStartDate, setHistoryStartDate] = useState('');
+  const [historyEndDate, setHistoryEndDate] = useState('');
   const [regCompany, setRegCompany] = useState(localStorage.getItem('pending_company') || '');
   const [loginError, setLoginError] = useState<{message: string, type: 'error' | 'success'} | null>(null);
-  const [modalType, setModalType] = useState<'category' | 'item' | 'add-user' | 'edit-user' | 'confirm' | 'shopping-list' | null>(null);
+  const [modalType, setModalType] = useState<'category' | 'item' | 'add-user' | 'edit-user' | 'supplier' | 'confirm' | 'shopping-list' | null>(null);
   const [editingItem, setEditingItem] = useState<StockItem | null>(null);
   const [editingMember, setEditingMember] = useState<UserProfile | null>(null);
+  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [targetId, setTargetId] = useState<string | null>(null);
   const [quickEntryChanges, setQuickEntryChanges] = useState<Record<string, { quantity: number, expiry?: string }>>({});
   const [hasLoggedEntry, setHasLoggedEntry] = useState(false);
   const [newListItems, setNewListItems] = useState<{name: string, quantity: string}[]>([]);
   const [newItemName, setNewItemName] = useState('');
   const [newItemQty, setNewItemQty] = useState('');
+  const [inventorySearch, setInventorySearch] = useState('');
+  const [quickEntrySearch, setQuickEntrySearch] = useState('');
 
   const geminiApiKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
   const canUseAiSuggestions = geminiApiKey.length > 0;
   const isAdmin = currentProfile?.role === 'admin';
 
+  const historyUserOptions = useMemo(() => {
+    const uniqueUsers = new Set<string>([...team.map(member => member.name), ...logs.map(log => log.user_name)]);
+    return Array.from(uniqueUsers)
+      .filter(name => name.trim().length > 0)
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [logs, team]);
+
   useEffect(() => {
     checkDatabase();
+    
+    // Detectar se voltou do link de recuperação de senha
+    const hashParams = new URLSearchParams(window.location.hash.substring(1));
+    const type = hashParams.get('type');
+    
+    if (type === 'recovery') {
+      setShowResetModal(true);
+    }
+    
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) fetchProfile(session.user.id);
@@ -123,6 +166,16 @@ const App = () => {
     });
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (modalType !== 'item') {
+      setItemImageFile(null);
+      setItemImagePreview(null);
+      return;
+    }
+    setItemImageFile(null);
+    setItemImagePreview(editingItem?.image_url || null);
+  }, [modalType, editingItem]);
 
   const checkDatabase = async () => {
     setDbStatus('checking');
@@ -180,7 +233,7 @@ const App = () => {
     if (!currentProfile) return;
 
     const allowedTabs: AppTab[] = isAdmin
-      ? ['dashboard', 'inventory', 'quick-entry', 'shopping-list', 'users', 'history']
+      ? ['dashboard', 'inventory', 'quick-entry', 'shopping-list', 'users', 'suppliers', 'history', 'company']
       : ['dashboard', 'quick-entry', 'shopping-list'];
 
     if (!allowedTabs.includes(activeTab)) {
@@ -190,30 +243,45 @@ const App = () => {
 
   useEffect(() => {
     if (isAdmin) return;
-    if (modalType === 'category' || modalType === 'item' || modalType === 'add-user' || modalType === 'edit-user') {
+    if (modalType === 'category' || modalType === 'item' || modalType === 'add-user' || modalType === 'edit-user' || modalType === 'supplier') {
       setModalType(null);
       setEditingItem(null);
       setEditingMember(null);
+      setEditingSupplier(null);
     }
   }, [modalType, isAdmin]);
+
+  useEffect(() => {
+    if (activeTab === 'history' && isAdmin && currentProfile) {
+      fetchHistoryLogs();
+    }
+  }, [activeTab, isAdmin, currentProfile, historyUserFilter, historyStartDate, historyEndDate]);
 
   const fetchAppData = async () => {
     if (!currentProfile) return;
     const orgId = currentProfile.organization_id;
     try {
-      const [catsRes, itemsRes, teamRes, movRes, logsRes, listsRes] = await Promise.all([
+      const [catsRes, itemsRes, teamRes, movRes, logsRes, listsRes, suppliersRes, orgRes] = await Promise.all([
         supabase.from('categories').select('*').eq('organization_id', orgId),
         supabase.from('products').select('*').eq('organization_id', orgId).order('name'),
         supabase.from('profiles').select('*').eq('organization_id', orgId),
         supabase.from('movements').select('*').eq('organization_id', orgId).order('date', { ascending: false }).limit(20),
         supabase.from('system_logs').select('*').eq('organization_id', orgId).order('created_at', { ascending: false }).limit(100),
-        supabase.from('shopping_lists').select('*, shopping_list_items(*)').eq('organization_id', orgId).order('created_at', { ascending: false })
+        supabase.from('shopping_lists').select('*, shopping_list_items(*)').eq('organization_id', orgId).order('created_at', { ascending: false }),
+        supabase.from('suppliers').select('*').eq('organization_id', orgId).order('name'),
+        supabase.from('organizations').select('*').eq('id', orgId).single()
       ]);
       if (catsRes.data) setCategories(catsRes.data);
       if (itemsRes.data) setItems(itemsRes.data);
       if (teamRes.data) setTeam(teamRes.data);
       if (movRes.data) setMovements(movRes.data);
       if (logsRes.data) setLogs(logsRes.data);
+      if (!suppliersRes.error && suppliersRes.data) setSuppliers(suppliersRes.data);
+      if (suppliersRes.error) {
+        console.warn('Tabela suppliers não encontrada ou sem permissão:', suppliersRes.error.message);
+        setSuppliers([]);
+      }
+      if (orgRes.data) setCurrentOrg(orgRes.data);
       if (listsRes.data) {
         const mappedLists = listsRes.data.map((list: any) => ({
           ...list,
@@ -224,6 +292,111 @@ const App = () => {
     } catch (e) {
       console.error("Erro ao buscar dados", e);
     }
+  };
+
+  const fetchHistoryLogs = async () => {
+    if (!currentProfile) return;
+    setIsLoadingHistory(true);
+    try {
+      let query = supabase
+        .from('system_logs')
+        .select('*')
+        .eq('organization_id', currentProfile.organization_id)
+        .order('created_at', { ascending: false })
+        .limit(1000);
+
+      if (historyUserFilter !== 'all') {
+        query = query.eq('user_name', historyUserFilter);
+      }
+      if (historyStartDate) {
+        query = query.gte('created_at', `${historyStartDate}T00:00:00`);
+      }
+      if (historyEndDate) {
+        query = query.lte('created_at', `${historyEndDate}T23:59:59.999`);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      setHistoryLogs(data || []);
+    } catch (e) {
+      console.error('Erro ao buscar histórico filtrado', e);
+      setHistoryLogs([]);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const exportHistoryToPdf = () => {
+    if (historyLogs.length === 0) return;
+
+    const escapeHtml = (value: string) =>
+      value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+    const rows = historyLogs
+      .map(log => `
+        <tr>
+          <td>${escapeHtml(new Date(log.created_at).toLocaleString('pt-BR'))}</td>
+          <td>${escapeHtml(log.user_name || '-')}</td>
+          <td>${escapeHtml(log.description || '-')}</td>
+        </tr>
+      `)
+      .join('');
+
+    const userLabel = historyUserFilter === 'all' ? 'Todos os usuários' : historyUserFilter;
+    const periodLabel = `${historyStartDate || 'Início'} até ${historyEndDate || 'Hoje'}`;
+
+    const html = `
+      <!DOCTYPE html>
+      <html lang="pt-br">
+      <head>
+        <meta charset="UTF-8" />
+        <title>Histórico SmartStock</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #1e293b; }
+          h1 { margin: 0 0 8px 0; font-size: 20px; }
+          .meta { margin-bottom: 16px; font-size: 12px; color: #475569; }
+          table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; vertical-align: top; }
+          th { background: #f8fafc; }
+        </style>
+      </head>
+      <body>
+        <h1>Histórico de Auditoria - SmartStock</h1>
+        <div class="meta">
+          <div><strong>Usuário:</strong> ${escapeHtml(userLabel)}</div>
+          <div><strong>Período:</strong> ${escapeHtml(periodLabel)}</div>
+          <div><strong>Registros:</strong> ${historyLogs.length}</div>
+          <div><strong>Gerado em:</strong> ${escapeHtml(new Date().toLocaleString('pt-BR'))}</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Momento</th>
+              <th>Responsável</th>
+              <th>Atividade Registrada</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </body>
+      </html>
+    `;
+
+    const printWindow = window.open('', '_blank', 'width=1000,height=700');
+    if (!printWindow) return;
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
   };
 
   // Função utilitária robusta para registrar logs do sistema
@@ -252,13 +425,88 @@ const App = () => {
     setLoginError(null);
     setIsSaving(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPass });
+      const email = loginEmail.trim().toLowerCase();
+      const password = loginPass;
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         if (error.message.includes('Email not confirmed')) {
           setLoginError({message: "Seu e-mail ainda não foi confirmado. Verifique sua caixa de entrada ou spam.", type: 'error'});
-        } else {
+        } else if (error.message.toLowerCase().includes('invalid login credentials')) {
           setLoginError({message: "E-mail ou senha incorretos.", type: 'error'});
+        } else {
+          setLoginError({message: `Falha no login: ${error.message}`, type: 'error'});
         }
+      }
+    } catch (err: any) {
+      setLoginError({message: err.message, type: 'error'});
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+    setIsSaving(true);
+    try {
+      const email = resetEmail.trim().toLowerCase();
+      if (!email) {
+        setLoginError({message: "Por favor, informe seu e-mail.", type: 'error'});
+        return;
+      }
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: 'https://estoque.r2b.ia.br'
+      });
+      if (error) {
+        setLoginError({message: `Erro ao enviar e-mail: ${error.message}`, type: 'error'});
+      } else {
+        setLoginError({message: "E-mail de recuperação enviado! Verifique sua caixa de entrada.", type: 'success'});
+        setTimeout(() => {
+          setLoginView('login');
+          setResetEmail('');
+          setLoginError(null);
+        }, 3000);
+      }
+    } catch (err: any) {
+      setLoginError({message: err.message, type: 'error'});
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (newPassword !== confirmPassword) {
+      setLoginError({message: "As senhas não coincidem.", type: 'error'});
+      return;
+    }
+    
+    if (newPassword.length < 6) {
+      setLoginError({message: "A senha deve ter pelo menos 6 caracteres.", type: 'error'});
+      return;
+    }
+    
+    setLoginError(null);
+    setIsSaving(true);
+    
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      
+      if (error) {
+        setLoginError({message: `Erro ao atualizar senha: ${error.message}`, type: 'error'});
+      } else {
+        setLoginError({message: "Senha atualizada com sucesso!", type: 'success'});
+        
+        // Limpar hash da URL
+        window.history.replaceState(null, '', window.location.pathname);
+        
+        setTimeout(() => {
+          setShowResetModal(false);
+          setNewPassword('');
+          setConfirmPassword('');
+          setLoginError(null);
+        }, 2000);
       }
     } catch (err: any) {
       setLoginError({message: err.message, type: 'error'});
@@ -276,11 +524,23 @@ const App = () => {
     if (regCompany) localStorage.setItem('pending_company', regCompany);
 
     try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({ email: loginEmail, password: loginPass });
+      const email = loginEmail.trim().toLowerCase();
+      const password = loginPass;
+      const { data: authData, error: authError } = await supabase.auth.signUp({ 
+        email, 
+        password,
+        options: {
+          emailRedirectTo: 'https://estoque.r2b.ia.br'
+        }
+      });
       if (authError) throw authError;
       if (authData.user) setLoginView('waiting-confirmation');
     } catch (err: any) {
-      setLoginError({message: err.message, type: 'error'});
+      if (err.message?.toLowerCase().includes('email rate limit exceeded')) {
+        setLoginError({message: "Limite de envio de emails atingido. Por favor, aguarde 1 hora e tente novamente ou entre em contato com o suporte.", type: 'error'});
+      } else {
+        setLoginError({message: err.message, type: 'error'});
+      }
     } finally {
       setIsSaving(false);
     }
@@ -351,7 +611,11 @@ const App = () => {
         fetchAppData();
       }
     } catch (err: any) {
-      alert("Erro ao adicionar membro: " + err.message);
+      if (err.message?.toLowerCase().includes('email rate limit exceeded')) {
+        alert("⚠️ Limite de envio de emails atingido.\n\nPor favor, aguarde 1 hora e tente novamente.\n\nSe precisar de ajuda, entre em contato com o suporte.");
+      } else {
+        alert("Erro ao adicionar membro: " + err.message);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -395,21 +659,173 @@ const App = () => {
     }
   };
 
+  const handleSaveSupplier = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!currentProfile) return;
+    setIsSaving(true);
+
+    const fd = new FormData(e.currentTarget);
+    const name = (fd.get('name') as string).trim().toUpperCase();
+    const payload = {
+      organization_id: currentProfile.organization_id,
+      name,
+      contact_name: (fd.get('contact_name') as string || '').trim() || null,
+      phone: (fd.get('phone') as string || '').trim() || null,
+      email: (fd.get('email') as string || '').trim().toLowerCase() || null,
+      document: (fd.get('document') as string || '').trim().toUpperCase() || null,
+      notes: (fd.get('notes') as string || '').trim() || null,
+    };
+
+    try {
+      let error;
+      if (editingSupplier) {
+        error = (await supabase.from('suppliers').update(payload).eq('id', editingSupplier.id)).error;
+        if (!error) await registerLog(`Fornecedor atualizado: ${name}`);
+      } else {
+        error = (await supabase.from('suppliers').insert(payload)).error;
+        if (!error) await registerLog(`Novo fornecedor cadastrado: ${name}`);
+      }
+
+      if (error) throw error;
+      setModalType(null);
+      setEditingSupplier(null);
+      await fetchAppData();
+    } catch (err: any) {
+      alert('Erro ao salvar fornecedor: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteSupplier = async (supplierId: string) => {
+    const supplier = suppliers.find(s => s.id === supplierId);
+    if (!supplier) return;
+    if (!confirm(`Excluir fornecedor ${supplier.name}?`)) return;
+
+    try {
+      const { error } = await supabase.from('suppliers').delete().eq('id', supplierId);
+      if (error) throw error;
+      await registerLog(`Fornecedor removido: ${supplier.name}`);
+      await fetchAppData();
+    } catch (err: any) {
+      alert('Erro ao excluir fornecedor: ' + err.message);
+    }
+  };
+
+  const generateImageFileName = (organizationId: string) => {
+    const randomId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+    return `${organizationId}/${Date.now()}-${randomId}.jpg`;
+  };
+
+  const resizeImageFile = (file: File, maxSize = 1024, quality = 0.8) =>
+    new Promise<Blob>((resolve, reject) => {
+      const reader = new FileReader();
+      const img = new Image();
+
+      reader.onload = () => {
+        img.src = reader.result as string;
+      };
+      reader.onerror = () => reject(new Error('Falha ao ler a imagem.'));
+
+      img.onload = () => {
+        const { width, height } = img;
+        let targetWidth = width;
+        let targetHeight = height;
+
+        if (width > height && width > maxSize) {
+          targetWidth = maxSize;
+          targetHeight = Math.round(height * (maxSize / width));
+        } else if (height > maxSize) {
+          targetHeight = maxSize;
+          targetWidth = Math.round(width * (maxSize / height));
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Falha ao processar a imagem.'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(new Error('Falha ao gerar a imagem.'));
+              return;
+            }
+            resolve(blob);
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+
+      img.onerror = () => reject(new Error('Imagem invalida.'));
+      reader.readAsDataURL(file);
+    });
+
+  const uploadProductImage = async (file: File, organizationId: string) => {
+    const resizedImage = await resizeImageFile(file);
+    const fileName = generateImageFileName(organizationId);
+
+    const { error } = await supabase
+      .storage
+      .from('product-images')
+      .upload(fileName, resizedImage, { contentType: 'image/jpeg', upsert: true });
+
+    if (error) throw error;
+
+    const { data } = supabase.storage.from('product-images').getPublicUrl(fileName);
+    return data.publicUrl;
+  };
+
+  const handleItemImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setItemImageFile(file);
+
+    if (!file) {
+      setItemImagePreview(editingItem?.image_url || null);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => setItemImagePreview(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
   const handleSaveItem = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!currentProfile) return;
     setIsSaving(true);
     const fd = new FormData(e.currentTarget);
     const name = fd.get('name') as string;
+    let imageUrl = editingItem?.image_url || null;
+
+    try {
+      if (itemImageFile) {
+        imageUrl = await uploadProductImage(itemImageFile, currentProfile.organization_id);
+      }
+    } catch (err: any) {
+      alert(`Erro ao enviar imagem: ${err.message}`);
+      setIsSaving(false);
+      return;
+    }
+
     const itemData = {
       organization_id: currentProfile.organization_id,
       category_id: editingItem ? editingItem.category_id : targetId,
       name: name,
+      barcode: (fd.get('barcode') as string) || null,
       unit: fd.get('unit') as string,
       min_stock: Number(fd.get('min_stock')),
       price: Number(fd.get('price')) || 0,
       quantity: editingItem ? editingItem.quantity : Number(fd.get('quantity')),
       expiry_date: fd.get('expiry_date') || null,
+      image_url: imageUrl,
       last_responsible: currentProfile.name,
       last_count_date: new Date().toISOString()
     };
@@ -427,6 +843,39 @@ const App = () => {
       await fetchAppData();
       setModalType(null);
       setEditingItem(null);
+      setItemImageFile(null);
+      setItemImagePreview(null);
+    }
+    setIsSaving(false);
+  };
+
+  const handleSaveCompanyInfo = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!currentOrg) return;
+    setIsSaving(true);
+    const fd = new FormData(e.currentTarget);
+    const companyData = {
+      name: fd.get('name') as string,
+      cnpj: (fd.get('cnpj') as string) || null,
+      address: (fd.get('address') as string) || null,
+      city: (fd.get('city') as string) || null,
+      state: (fd.get('state') as string) || null,
+      zip_code: (fd.get('zip_code') as string) || null,
+      phone: (fd.get('phone') as string) || null,
+      contact_person: (fd.get('contact_person') as string) || null,
+      email: (fd.get('email') as string) || null,
+      website: (fd.get('website') as string) || null,
+    };
+
+    const { error } = await supabase.from('organizations').update(companyData).eq('id', currentOrg.id);
+    
+    if (!error) {
+      await registerLog(`Informações da empresa atualizadas`);
+      setCurrentOrg({...currentOrg, ...companyData});
+      setIsEditingCompany(false);
+      await fetchAppData();
+    } else {
+      setLoginError({message: error.message, type: 'error'});
     }
     setIsSaving(false);
   };
@@ -547,7 +996,29 @@ const App = () => {
 
   const shareToWhatsApp = (list: ShoppingList) => {
     const itemsText = list.items?.map(i => `• ${i.product_name}: ${i.quantity} ${i.is_bought ? '✅' : '❌'}`).join('\n');
-    const text = `*Requisição de Compra - SmartStock*\n\nNome da Lista: ${list.requester_name}\nData: ${new Date(list.created_at).toLocaleDateString('pt-BR')}\nStatus: ${list.status === 'pending' ? 'Pendente' : 'Concluída'}\n\n*Itens:*\n${itemsText}`;
+    
+    // Construir seção de informações da empresa
+    let companyInfo = '\n\n*━━━━━━━━━━━━━━━━━━━━━━━*\n*INFORMAÇÕES DA EMPRESA*\n*━━━━━━━━━━━━━━━━━━━━━━━*\n';
+    companyInfo += `*${currentOrg?.name || 'Empresa'}*\n`;
+    if (currentOrg?.cnpj) companyInfo += `CNPJ: ${currentOrg.cnpj}\n`;
+    if (currentOrg?.phone) companyInfo += `Telefone: ${currentOrg.phone}\n`;
+    if (currentOrg?.email) companyInfo += `Email: ${currentOrg.email}\n`;
+    
+    // Montar endereço completo
+    const addressParts = [];
+    if (currentOrg?.address) addressParts.push(currentOrg.address);
+    if (currentOrg?.city) addressParts.push(currentOrg.city);
+    if (currentOrg?.state) addressParts.push(currentOrg.state.toUpperCase());
+    if (currentOrg?.zip_code) addressParts.push(currentOrg.zip_code);
+    
+    if (addressParts.length > 0) {
+      companyInfo += `Endereço: ${addressParts.join(', ')}\n`;
+    }
+    
+    if (currentOrg?.website) companyInfo += `Website: ${currentOrg.website}\n`;
+    if (currentOrg?.contact_person) companyInfo += `Responsável: ${currentOrg.contact_person}\n`;
+
+    const text = `*Requisição de Compra - SmartStock*\n\nNome da Lista: ${list.requester_name}\nData: ${new Date(list.created_at).toLocaleDateString('pt-BR')}\nStatus: ${list.status === 'pending' ? 'Pendente' : 'Concluída'}\n\n*Itens:*\n${itemsText}${companyInfo}`;
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
 
@@ -869,22 +1340,72 @@ const App = () => {
           <button onClick={() => setLoginView('login')} className="flex-1 py-3 rounded-xl font-black text-[10px] uppercase transition-all bg-white text-indigo-600 shadow-sm">Entrar</button>
         </div>
 
-        <form onSubmit={loginView === 'login' ? handleLogin : handleRegister} className="space-y-4">
+        <form onSubmit={loginView === 'reset-password' ? handlePasswordReset : loginView === 'login' ? handleLogin : handleRegister} className="space-y-4">
           {loginError && (
-            <div className="p-4 bg-rose-50 border border-rose-100 text-rose-600 rounded-xl text-[10px] font-black uppercase leading-relaxed flex gap-3 items-start">
+            <div className={`p-4 ${loginError.type === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'} border rounded-xl text-[10px] font-black uppercase leading-relaxed flex gap-3 items-start`}>
               <AlertCircle size={14} className="shrink-0 mt-0.5" />
               {loginError.message}
             </div>
           )}
           
-          {loginView === 'register' && <input required value={regCompany} onChange={e => setRegCompany(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold focus:border-indigo-600 outline-none" placeholder="Nome da Empresa" />}
-          
-          <input required type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="E-mail" />
-          <input required type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Senha" />
-          
-          <button disabled={isSaving} className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-tighter shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">
-            {isSaving ? 'Aguarde...' : loginView === 'login' ? 'Acessar Painel' : 'Confirmar Cadastro'}
-          </button>
+          {loginView === 'reset-password' ? (
+            <>
+              <div className="text-center space-y-2">
+                <h2 className="text-xl font-black uppercase tracking-tighter">Recuperar Senha</h2>
+                <p className="text-[10px] text-slate-500 font-bold uppercase">Digite seu e-mail para receber o link de redefinição</p>
+              </div>
+              <input 
+                required 
+                type="email" 
+                value={resetEmail} 
+                onChange={e => setResetEmail(e.target.value)} 
+                className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" 
+                placeholder="Seu E-mail" 
+              />
+              <button disabled={isSaving} className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-tighter shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">
+                {isSaving ? 'Enviando...' : 'Enviar Link de Recuperação'}
+              </button>
+              <button 
+                type="button" 
+                onClick={() => { setLoginView('login'); setResetEmail(''); setLoginError(null); }} 
+                className="w-full py-2 font-black text-[10px] uppercase text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                Voltar ao Login
+              </button>
+            </>
+          ) : (
+            <>
+              {loginView === 'register' && <input required value={regCompany} onChange={e => setRegCompany(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold focus:border-indigo-600 outline-none" placeholder="Nome da Empresa" />}
+              
+              <input required type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="E-mail" />
+              <div className="relative">
+                <input required type={showLoginPass ? 'text' : 'password'} value={loginPass} onChange={e => setLoginPass(e.target.value)} className="w-full p-4 pr-14 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Senha" />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPass(prev => !prev)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
+                  aria-label={showLoginPass ? 'Ocultar senha' : 'Mostrar senha'}
+                  title={showLoginPass ? 'Ocultar senha' : 'Mostrar senha'}
+                >
+                  {showLoginPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              
+              <button disabled={isSaving} className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-tighter shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">
+                {isSaving ? 'Aguarde...' : loginView === 'login' ? 'Acessar Painel' : 'Confirmar Cadastro'}
+              </button>
+
+              {loginView === 'login' && (
+                <button 
+                  type="button" 
+                  onClick={() => { setLoginView('reset-password'); setLoginError(null); }} 
+                  className="w-full text-center text-[10px] font-black uppercase text-indigo-600 hover:text-indigo-700 transition-colors"
+                >
+                  Esqueceu sua senha?
+                </button>
+              )}
+            </>
+          )}
         </form>
 
         {loginView === 'login' && (
@@ -918,10 +1439,12 @@ const App = () => {
         <nav className="flex flex-col gap-2 flex-1">
           <button onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><LayoutDashboard size={20}/> Painel</button>
           {isAdmin && <button onClick={() => setActiveTab('inventory')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'inventory' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Tags size={20}/> Inventário</button>}
+          {isAdmin && <button onClick={() => setActiveTab('suppliers')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'suppliers' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Building2 size={20}/> Fornecedores</button>}
           <button onClick={() => setActiveTab('quick-entry')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'quick-entry' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><ClipboardList size={20}/> Lançamentos</button>
           <button onClick={() => setActiveTab('shopping-list')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'shopping-list' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><ShoppingCart size={20}/> Compras</button>
           {isAdmin && <button onClick={() => setActiveTab('users')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'users' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Users size={20}/> Equipe</button>}
           {isAdmin && <button onClick={() => setActiveTab('history')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'history' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><History size={20}/> Histórico</button>}
+          {isAdmin && <button onClick={() => setActiveTab('company')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'company' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Building2 size={20}/> Empresa</button>}
         </nav>
         <div className="pt-6 border-t">
             <div className="flex items-center gap-3 mb-6 bg-slate-50 p-3 rounded-2xl">
@@ -938,23 +1461,25 @@ const App = () => {
           <div className="flex items-center gap-3 w-full">
             <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg flex-shrink-0"><Menu size={24} className="text-slate-600" /></button>
             <div className="flex-1">
-              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'inventory' ? 'Inventário' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
+              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'suppliers' ? 'Cadastro de Fornecedores' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'inventory' ? 'Inventário' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'company' ? 'Informações da Empresa' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
               <p className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest hidden md:block">{currentOrg?.name} • Painel Administrativo</p>
             </div>
           </div>
           <div className="flex gap-3">
             {activeTab === 'inventory' && <button onClick={() => setModalType('category')} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"><Plus size={18} className="inline mr-2"/> CATEGORIA</button>}
+            {activeTab === 'suppliers' && isAdmin && <button onClick={() => { setEditingSupplier(null); setModalType('supplier'); }} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"><Plus size={18} className="inline mr-2"/> FORNECEDOR</button>}
             {activeTab === 'quick-entry' && <button onClick={saveQuickEntry} disabled={isSaving || Object.keys(quickEntryChanges).length === 0} className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black text-xs shadow-xl flex items-center gap-2 hover:bg-emerald-700 transition-all">{isSaving ? <Loader2 className="animate-spin" /> : <Save size={18}/>} CONFIRMAR TUDO</button>}
             {activeTab === 'shopping-list' && <button onClick={() => setModalType('shopping-list')} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"><Plus size={18} className="inline mr-2"/> NOVA REQUISIÇÃO</button>}
             {activeTab === 'users' && isAdmin && <button onClick={() => setModalType('add-user')} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all"><UserPlus size={18} className="inline mr-2"/> ADICIONAR MEMBRO</button>}
             {activeTab === 'history' && isAdmin && <button onClick={fetchAppData} className="bg-white border-2 text-slate-600 px-6 py-4 rounded-2xl font-black text-xs shadow-sm hover:bg-slate-50 transition-all flex items-center gap-2"><RefreshCw size={18}/> ATUALIZAR</button>}
+            {activeTab === 'history' && isAdmin && <button onClick={exportHistoryToPdf} disabled={isLoadingHistory || historyLogs.length === 0} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs shadow-xl hover:bg-indigo-700 transition-all flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"><Download size={18}/> EXPORTAR PDF</button>}
           </div>
         </header>
 
         {activeTab === 'dashboard' && (
           <div className="space-y-10 animate-in fade-in duration-500">
             {/* Cards Financeiros e Operacionais */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {isAdmin ? (
                   <div className="bg-indigo-600 p-8 rounded-[2.5rem] text-white shadow-2xl shadow-indigo-200 lg:col-span-2 flex flex-col justify-between group overflow-hidden relative">
                     <div className="absolute -right-4 -bottom-4 opacity-10 group-hover:scale-110 transition-transform duration-700">
@@ -977,26 +1502,25 @@ const App = () => {
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Valor de estoque disponível apenas para administradores</p>
                   </div>
                 )}
-                <div className="bg-white p-6 rounded-[2rem] border shadow-sm flex flex-col justify-between hover:border-indigo-200 transition-all group">
-                    <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase mb-2 group-hover:text-indigo-500 transition-colors">Produtos</p>
-                        <h3 className="text-4xl font-black text-slate-800">{items.length}</h3>
+                <div className="bg-emerald-600 p-6 rounded-[2rem] text-white shadow-lg shadow-emerald-200 flex flex-col justify-between hover:shadow-emerald-300 transition-all group overflow-hidden relative">
+                    <div className="absolute -right-3 -bottom-3 opacity-10">
+                      <Package size={80} />
                     </div>
-                    <p className="text-[9px] font-bold text-slate-400 uppercase mt-4">No Inventário</p>
+                    <div className="relative z-10">
+                        <p className="text-[10px] font-black uppercase mb-2 opacity-90">Produtos</p>
+                        <h3 className="text-4xl font-black">{items.length}</h3>
+                    </div>
+                    <p className="text-[9px] font-bold uppercase mt-4 opacity-70">No Inventário</p>
                 </div>
-                <div className="bg-white p-6 rounded-[2rem] border shadow-sm flex flex-col justify-between hover:border-rose-200 transition-all group">
-                    <div>
-                        <p className="text-[10px] font-black text-rose-400 uppercase mb-2">Crítico</p>
-                        <h3 className="text-4xl font-black text-rose-600">{items.filter(i => i.quantity <= i.min_stock).length}</h3>
+                <div className="bg-rose-600 p-6 rounded-[2rem] text-white shadow-lg shadow-rose-200 flex flex-col justify-between hover:shadow-rose-300 transition-all group overflow-hidden relative">
+                    <div className="absolute -right-3 -bottom-3 opacity-10">
+                      <AlertTriangle size={80} />
                     </div>
-                    <p className="text-[9px] font-bold text-rose-400 uppercase mt-4">Abaixo do Mínimo</p>
-                </div>
-                <div className="bg-white p-6 rounded-[2rem] border shadow-sm flex flex-col justify-between hover:border-amber-200 transition-all group">
-                    <div>
-                        <p className="text-[10px] font-black text-amber-400 uppercase mb-2">Validade</p>
-                        <h3 className="text-4xl font-black text-amber-500">{items.filter(i => getExpiryStatus(i.expiry_date) === 'warning').length}</h3>
+                    <div className="relative z-10">
+                        <p className="text-[10px] font-black uppercase mb-2 opacity-90">Crítico</p>
+                        <h3 className="text-4xl font-black">{items.filter(i => i.quantity <= i.min_stock).length}</h3>
                     </div>
-                    <p className="text-[9px] font-bold text-amber-400 uppercase mt-4">Atenção Próxima</p>
+                    <p className="text-[9px] font-bold uppercase mt-4 opacity-70">Abaixo do Mínimo</p>
                 </div>
             </div>
 
@@ -1041,92 +1565,128 @@ const App = () => {
 
         {activeTab === 'inventory' && isAdmin && (
           <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
-            {categories.map(cat => (
-              <div key={cat.id} className="space-y-4">
-                <div className="flex justify-between items-center px-4">
-                  <h2 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-3"><div className="w-2 h-6 bg-indigo-600 rounded-full"></div>{cat.name}</h2>
-                  <button onClick={() => { setTargetId(cat.id); setModalType('item'); }} className="text-[10px] font-black bg-slate-100 px-4 py-2 rounded-lg hover:bg-slate-200 transition-all uppercase">+ ADICIONAR ITEM</button>
-                </div>
-                <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm">
-                  {/* Desktop Table */}
-                  <div className="hidden md:block overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
-                        <tr><th className="px-8 py-4">Produto</th><th className="px-8 py-4 text-center">Saldo</th><th className="px-8 py-4 text-center">Preço Un.</th><th className="px-8 py-4 text-center">Vencimento</th><th className="px-8 py-4 text-right">Ações</th></tr>
-                      </thead>
-                      <tbody className="divide-y text-sm text-slate-700">
-                        {items.filter(i => i.category_id === cat.id).map(item => {
-                          const expiryStatus = getExpiryStatus(item.expiry_date);
-                          return (
-                            <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                              <td className="px-8 py-6 font-bold uppercase tracking-tight">{item.name} <span className="text-[10px] text-slate-400 block tracking-widest">{item.unit.toUpperCase()}</span></td>
-                              <td className={`px-8 py-6 text-center font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : ''}`}>{item.quantity}</td>
-                              <td className="px-8 py-6 text-center font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</td>
-                              <td className={`px-8 py-6 text-center font-bold ${expiryStatus === 'expired' ? 'text-rose-600' : expiryStatus === 'warning' ? 'text-amber-500' : 'text-slate-400'}`}>
-                                  {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString('pt-BR') : '-'}
-                              </td>
-                              <td className="px-8 py-6 text-right space-x-2">
-                                  <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
-                                  <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
-                                      const { error } = await supabase.from('products').delete().eq('id', item.id); 
-                                      if(!error) {
-                                          await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
-                                          await fetchAppData(); 
-                                      }
-                                  } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  
-                  {/* Mobile Cards */}
-                  <div className="md:hidden space-y-3 p-4">
-                    {items.filter(i => i.category_id === cat.id).map(item => {
-                      const expiryStatus = getExpiryStatus(item.expiry_date);
-                      return (
-                        <div key={item.id} className="bg-slate-50 rounded-2xl p-4 space-y-3">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <p className="font-bold uppercase text-sm tracking-tight">{item.name}</p>
-                              <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{item.unit.toUpperCase()}</p>
-                            </div>
-                            <div className="flex gap-2">
-                              <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
-                              <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
-                                  const { error } = await supabase.from('products').delete().eq('id', item.id); 
-                                  if(!error) {
-                                      await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
-                                      await fetchAppData(); 
-                                  }
-                              } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
-                            </div>
-                          </div>
-                          <div className="grid grid-cols-3 gap-3 text-[10px]">
-                            <div>
-                              <p className="text-slate-400 font-black uppercase mb-1">Saldo</p>
-                              <p className={`font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : 'text-slate-900'}`}>{item.quantity}</p>
-                            </div>
-                            <div>
-                              <p className="text-slate-400 font-black uppercase mb-1">Preço</p>
-                              <p className="font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</p>
-                            </div>
-                            <div>
-                              <p className="text-slate-400 font-black uppercase mb-1">Validade</p>
-                              <p className={`font-bold ${expiryStatus === 'expired' ? 'text-rose-600' : expiryStatus === 'warning' ? 'text-amber-500' : 'text-slate-400'}`}>
-                                {item.expiry_date ? new Date(item.expiry_date).toLocaleDateString('pt-BR') : '-'}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+            {/* Search Bar */}
+            <div className="sticky top-0 z-10 bg-gradient-to-b from-slate-50 to-slate-50/0 pb-4">
+              <div className="relative">
+                <Search size={20} className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Buscar por nome ou código de barras..."
+                  value={inventorySearch}
+                  onChange={(e) => setInventorySearch(e.target.value)}
+                  className="w-full pl-16 pr-6 py-4 bg-white border-2 border-slate-200 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 focus:shadow-lg transition-all"
+                />
               </div>
-            ))}
+            </div>
+
+            {categories.map(cat => {
+              const filteredItems = items.filter(i => 
+                i.category_id === cat.id &&
+                (
+                  i.name.toLowerCase().includes(inventorySearch.toLowerCase()) ||
+                  (i.barcode && i.barcode.toLowerCase().includes(inventorySearch.toLowerCase()))
+                )
+              );
+              
+              if (filteredItems.length === 0 && !inventorySearch) return null;
+              if (filteredItems.length === 0 && inventorySearch) return null;
+              
+              return (
+                <div key={cat.id} className="space-y-4">
+                  <div className="flex justify-between items-center px-4">
+                    <h2 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-3"><div className="w-2 h-6 bg-indigo-600 rounded-full"></div>{cat.name}</h2>
+                    <button onClick={() => { setTargetId(cat.id); setModalType('item'); }} className="text-[10px] font-black bg-slate-100 px-4 py-2 rounded-lg hover:bg-slate-200 transition-all uppercase">+ ADICIONAR ITEM</button>
+                  </div>
+                  <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm">
+                    {/* Desktop Table */}
+                    <div className="hidden md:block overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
+                          <tr><th className="px-8 py-4">Produto</th><th className="px-8 py-4 text-center">Código</th><th className="px-8 py-4 text-center">Saldo</th><th className="px-8 py-4 text-center">Preço Un.</th><th className="px-8 py-4 text-center">Valor Total</th><th className="px-8 py-4 text-right">Ações</th></tr>
+                        </thead>
+                        <tbody className="divide-y text-sm text-slate-700">
+                          {filteredItems.map(item => {
+                            const totalValue = item.quantity * item.price;
+                            return (
+                              <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                                <td className="px-8 py-6 font-bold uppercase tracking-tight">{item.name} <span className="text-[10px] text-slate-400 block tracking-widest">{item.unit.toUpperCase()}</span></td>
+                                <td className="px-8 py-6 text-center text-[10px] font-mono font-bold text-slate-500">{item.barcode ? <span className="bg-slate-100 px-3 py-1 rounded-lg">{item.barcode}</span> : <span className="text-slate-300">-</span>}</td>
+                                <td className={`px-8 py-6 text-center font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : ''}`}>{item.quantity}</td>
+                                <td className="px-8 py-6 text-center font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</td>
+                                <td className="px-8 py-6 text-center font-black text-lg text-indigo-600">R$ {totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                                <td className="px-8 py-6 text-right space-x-2">
+                                    <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
+                                    <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
+                                        const { error } = await supabase.from('products').delete().eq('id', item.id); 
+                                        if(!error) {
+                                            await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
+                                            await fetchAppData(); 
+                                        }
+                                    } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    {/* Mobile Cards */}
+                    <div className="md:hidden space-y-3 p-4">
+                      {filteredItems.map(item => {
+                        return (
+                          <div key={item.id} className="bg-slate-50 rounded-2xl p-4 space-y-3">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-bold uppercase text-sm tracking-tight">{item.name}</p>
+                                <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{item.unit.toUpperCase()}</p>
+                                {item.barcode && <p className="text-[10px] font-mono font-bold text-slate-500 mt-1">📦 {item.barcode}</p>}
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
+                                <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
+                                    const { error } = await supabase.from('products').delete().eq('id', item.id); 
+                                    if(!error) {
+                                        await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
+                                        await fetchAppData(); 
+                                    }
+                                } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 text-[10px]">
+                              <div>
+                                <p className="text-slate-400 font-black uppercase mb-1">Saldo</p>
+                                <p className={`font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : 'text-slate-900'}`}>{item.quantity}</p>
+                              </div>
+                              <div>
+                                <p className="text-slate-400 font-black uppercase mb-1">Preço</p>
+                                <p className="font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</p>
+                              </div>
+                            </div>
+                            <div className="bg-indigo-50 border-2 border-indigo-100 rounded-xl p-3">
+                              <p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Valor Total</p>
+                              <p className="font-black text-lg text-indigo-600">R$ {(item.quantity * item.price).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* No results message */}
+            {inventorySearch && items.filter(i => 
+              i.name.toLowerCase().includes(inventorySearch.toLowerCase()) ||
+              (i.barcode && i.barcode.toLowerCase().includes(inventorySearch.toLowerCase()))
+            ).length === 0 && (
+              <div className="bg-white border-2 border-dashed rounded-[2.5rem] p-20 text-center space-y-4">
+                <Search size={48} className="mx-auto text-slate-200" />
+                <p className="text-slate-400 font-black uppercase text-xs">Nenhum produto encontrado para "{inventorySearch}"</p>
+              </div>
+            )}
+
             {categories.length === 0 && (
                 <div className="bg-white border-2 border-dashed rounded-[2.5rem] p-20 text-center space-y-4">
                     <Tags size={48} className="mx-auto text-slate-200" />
@@ -1139,8 +1699,28 @@ const App = () => {
 
         {activeTab === 'quick-entry' && (
           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4">
+            {/* Search Bar */}
+            <div className="sticky top-0 z-10 bg-gradient-to-b from-slate-50 to-slate-50/0 pb-4">
+              <div className="relative">
+                <Search size={20} className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Buscar por nome ou código de barras..."
+                  value={quickEntrySearch}
+                  onChange={(e) => setQuickEntrySearch(e.target.value)}
+                  className="w-full pl-16 pr-6 py-4 bg-white border-2 border-slate-200 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 focus:shadow-lg transition-all"
+                />
+              </div>
+            </div>
+
             {categories.map(cat => {
-              const catItems = items.filter(i => i.category_id === cat.id);
+              const catItems = items.filter(i => 
+                i.category_id === cat.id &&
+                (
+                  i.name.toLowerCase().includes(quickEntrySearch.toLowerCase()) ||
+                  (i.barcode && i.barcode.toLowerCase().includes(quickEntrySearch.toLowerCase()))
+                )
+              );
               if (catItems.length === 0) return null;
               return (
                 <div key={cat.id} className="space-y-4">
@@ -1150,16 +1730,14 @@ const App = () => {
                     <div className="hidden md:block overflow-x-auto">
                       <table className="w-full text-left">
                         <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
-                          <tr><th className="px-8 py-6">Item</th><th className="px-8 py-6 text-center">Saldo Atual</th><th className="px-8 py-6 text-center">Data Validade</th><th className="px-8 py-6 text-center">Novo Saldo</th></tr>
+                          <tr><th className="px-8 py-6">Item</th><th className="px-8 py-6 text-center">Código</th><th className="px-8 py-6 text-center">Saldo Atual</th><th className="px-8 py-6 text-center">Novo Saldo</th></tr>
                         </thead>
                         <tbody className="divide-y">
                           {catItems.map(item => (
                             <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                               <td className="px-8 py-6 font-bold uppercase text-slate-700 tracking-tight">{item.name}</td>
+                              <td className="px-8 py-6 text-center text-[10px] font-mono font-bold text-slate-500">{item.barcode ? <span className="bg-slate-100 px-3 py-1 rounded-lg">{item.barcode}</span> : <span className="text-slate-300">-</span>}</td>
                               <td className="px-8 py-6 text-center text-slate-400 font-bold uppercase text-[10px]">{item.quantity} {item.unit}</td>
-                              <td className="px-8 py-6 text-center">
-                                  <input type="date" defaultValue={item.expiry_date} onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {quantity: item.quantity}), expiry: e.target.value}}))} className="p-2 text-xs font-bold bg-slate-100 rounded-lg outline-none focus:ring-2 focus:ring-indigo-200 border-none uppercase shadow-inner"/>
-                              </td>
                               <td className="px-8 py-6 text-center">
                                 <input 
                                   type="number" 
@@ -1181,14 +1759,11 @@ const App = () => {
                       {catItems.map(item => (
                         <div key={item.id} className="bg-slate-50 rounded-2xl p-4 space-y-3">
                           <p className="font-bold uppercase text-sm tracking-tight">{item.name}</p>
+                          {item.barcode && <p className="text-[10px] font-mono font-bold text-slate-500">📦 {item.barcode}</p>}
                           <div className="space-y-3">
                             <div>
                               <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Saldo Atual</p>
                               <p className="text-[10px] text-slate-600 font-bold uppercase">{item.quantity} {item.unit}</p>
-                            </div>
-                            <div>
-                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Data Validade</p>
-                              <input type="date" defaultValue={item.expiry_date} onChange={e => setQuickEntryChanges(p => ({...p, [item.id]: {...(p[item.id] || {quantity: item.quantity}), expiry: e.target.value}}))} className="w-full p-2 text-xs font-bold bg-white border-2 border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-200"/>
                             </div>
                             <div>
                               <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Novo Saldo</p>
@@ -1209,6 +1784,18 @@ const App = () => {
                 </div>
               );
             })}
+            
+            {/* No results message for search */}
+            {quickEntrySearch && items.filter(i => 
+              i.name.toLowerCase().includes(quickEntrySearch.toLowerCase()) ||
+              (i.barcode && i.barcode.toLowerCase().includes(quickEntrySearch.toLowerCase()))
+            ).length === 0 && (
+              <div className="bg-white border-2 border-dashed rounded-[2.5rem] p-20 text-center space-y-4">
+                <Search size={48} className="mx-auto text-slate-200" />
+                <p className="text-slate-400 font-black uppercase text-xs">Nenhum produto encontrado para "{quickEntrySearch}"</p>
+              </div>
+            )}
+
             {items.length === 0 && (
               <div className="bg-white border-2 border-dashed rounded-[2.5rem] p-20 text-center space-y-4">
                 <ClipboardList size={48} className="mx-auto text-slate-200" />
@@ -1353,6 +1940,73 @@ const App = () => {
           </div>
         )}
 
+        {activeTab === 'suppliers' && isAdmin && (
+          <div className="space-y-6 animate-in fade-in">
+            <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden">
+              <div className="bg-slate-50 px-4 md:px-8 py-6 border-b flex flex-col md:flex-row gap-2 md:gap-0 justify-between items-start md:items-center">
+                <h3 className="font-black uppercase tracking-tighter flex items-center gap-3 text-sm md:text-base"><Building2 size={20} className="text-indigo-600"/> Fornecedores Cadastrados</h3>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{suppliers.length} fornecedores</span>
+              </div>
+
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase border-b">
+                    <tr>
+                      <th className="px-8 py-6">Fornecedor</th>
+                      <th className="px-8 py-6">Contato</th>
+                      <th className="px-8 py-6">Telefone</th>
+                      <th className="px-8 py-6">E-mail</th>
+                      <th className="px-8 py-6 text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y text-sm">
+                    {suppliers.length === 0 ? (
+                      <tr><td colSpan={5} className="px-8 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">Nenhum fornecedor cadastrado.</td></tr>
+                    ) : suppliers.map(supplier => (
+                      <tr key={supplier.id} className="hover:bg-slate-50/50 transition-colors">
+                        <td className="px-8 py-6">
+                          <p className="font-bold uppercase tracking-tight text-slate-800">{supplier.name}</p>
+                          <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{supplier.document || '-'}</p>
+                        </td>
+                        <td className="px-8 py-6 font-bold text-slate-600 uppercase tracking-tight">{supplier.contact_name || '-'}</td>
+                        <td className="px-8 py-6 font-bold text-slate-500">{supplier.phone || '-'}</td>
+                        <td className="px-8 py-6 font-medium text-slate-500">{supplier.email || '-'}</td>
+                        <td className="px-8 py-6 text-right space-x-2">
+                          <button onClick={() => { setEditingSupplier(supplier); setModalType('supplier'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
+                          <button onClick={() => handleDeleteSupplier(supplier.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="md:hidden divide-y">
+                {suppliers.length === 0 ? (
+                  <div className="px-4 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">Nenhum fornecedor cadastrado.</div>
+                ) : suppliers.map(supplier => (
+                  <div key={supplier.id} className="p-4 space-y-3 hover:bg-slate-50/50 transition-colors">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-bold uppercase tracking-tight text-sm">{supplier.name}</p>
+                        <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{supplier.document || '-'}</p>
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={() => { setEditingSupplier(supplier); setModalType('supplier'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
+                        <button onClick={() => handleDeleteSupplier(supplier.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                      </div>
+                    </div>
+                    <p className="text-xs font-bold text-slate-600 uppercase">Contato: {supplier.contact_name || '-'}</p>
+                    <p className="text-xs font-bold text-slate-500">Telefone: {supplier.phone || '-'}</p>
+                    <p className="text-xs font-medium text-slate-500 break-all">E-mail: {supplier.email || '-'}</p>
+                    {supplier.notes ? <p className="text-[10px] font-medium text-slate-500 uppercase tracking-tight">Obs: {supplier.notes}</p> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'history' && isAdmin && (
           <div className="space-y-6 animate-in slide-in-from-right-4 duration-500">
             <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden">
@@ -1362,6 +2016,45 @@ const App = () => {
                         <ShieldCheck size={14} className="text-emerald-500"/> Auditoria Imutável Ativada
                     </div>
                 </div>
+            <div className="px-4 md:px-8 py-4 border-b bg-white">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <select
+                  value={historyUserFilter}
+                  onChange={e => setHistoryUserFilter(e.target.value)}
+                  className="w-full p-3 bg-slate-50 border-2 rounded-xl text-[10px] font-black uppercase tracking-wider outline-none focus:border-indigo-600"
+                >
+                  <option value="all">Todos os usuários</option>
+                  {historyUserOptions.map(userName => (
+                    <option key={userName} value={userName}>{userName}</option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  value={historyStartDate}
+                  onChange={e => setHistoryStartDate(e.target.value)}
+                  className="w-full p-3 bg-slate-50 border-2 rounded-xl text-[10px] font-black uppercase tracking-wider outline-none focus:border-indigo-600"
+                  title="Data inicial"
+                />
+                <input
+                  type="date"
+                  value={historyEndDate}
+                  onChange={e => setHistoryEndDate(e.target.value)}
+                  className="w-full p-3 bg-slate-50 border-2 rounded-xl text-[10px] font-black uppercase tracking-wider outline-none focus:border-indigo-600"
+                  title="Data final"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistoryUserFilter('all');
+                    setHistoryStartDate('');
+                    setHistoryEndDate('');
+                  }}
+                  className="w-full p-3 bg-white border-2 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-500 hover:bg-slate-50 transition-all"
+                >
+                  Limpar Filtros
+                </button>
+              </div>
+            </div>
                 
                 {/* Desktop Table */}
                 <div className="hidden md:block overflow-x-auto">
@@ -1374,9 +2067,11 @@ const App = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y text-sm">
-                            {logs.length === 0 ? (
-                                <tr><td colSpan={3} className="px-8 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">Nenhuma atividade registrada no histórico ainda.</td></tr>
-                            ) : logs.map(log => (
+                            {isLoadingHistory ? (
+                              <tr><td colSpan={3} className="px-8 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">Buscando histórico...</td></tr>
+                            ) : historyLogs.length === 0 ? (
+                              <tr><td colSpan={3} className="px-8 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">Nenhuma atividade encontrada para os filtros selecionados.</td></tr>
+                            ) : historyLogs.map(log => (
                                 <tr key={log.id} className="hover:bg-slate-50/50 transition-colors border-l-4 border-l-transparent hover:border-l-indigo-600">
                                     <td className="px-8 py-6">
                                         <div className="flex items-center gap-2 text-slate-500 font-bold uppercase text-[10px] tracking-tight">
@@ -1403,11 +2098,15 @@ const App = () => {
 
                 {/* Mobile Cards */}
                 <div className="md:hidden divide-y">
-                    {logs.length === 0 ? (
+                  {isLoadingHistory ? (
+                    <div className="px-4 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">
+                      Buscando histórico...
+                    </div>
+                  ) : historyLogs.length === 0 ? (
                         <div className="px-4 py-20 text-center text-slate-400 uppercase font-black text-xs tracking-widest">
-                            Nenhuma atividade registrada no histórico ainda.
+                      Nenhuma atividade encontrada para os filtros selecionados.
                         </div>
-                    ) : logs.map(log => (
+                  ) : historyLogs.map(log => (
                         <div key={log.id} className="p-4 hover:bg-slate-50/50 transition-colors border-l-4 border-l-indigo-600">
                             <div className="space-y-3">
                                 <div className="flex items-center gap-2 text-slate-500 font-bold uppercase text-[10px] tracking-tight">
@@ -1435,6 +2134,137 @@ const App = () => {
             </div>
           </div>
         )}
+
+        {activeTab === 'company' && isAdmin && (
+          <div className="space-y-6 animate-in slide-in-from-right-4 duration-500 max-w-4xl">
+            <div className="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden">
+              <div className="bg-gradient-to-r from-indigo-50 to-blue-50 px-4 md:px-8 py-8 border-b">
+                <h3 className="font-black uppercase tracking-tighter flex items-center gap-3 text-lg md:text-xl mb-2"><Building2 size={24} className="text-indigo-600"/> Informações da Empresa</h3>
+                <p className="text-[11px] text-slate-500 font-bold uppercase tracking-widest">Dados utilizados em documentos, comunicações e integrações</p>
+              </div>
+              
+              {!isEditingCompany ? (
+                <div className="p-6 md:p-8 space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Linha 1: Nome e CNPJ */}
+                    <div className="bg-slate-50 rounded-2xl p-6 border-2 border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Nome da Empresa</p>
+                      <p className="text-lg font-black text-slate-900 uppercase tracking-tight">{currentOrg?.name || 'Não configurado'}</p>
+                    </div>
+                    <div className="bg-blue-50 rounded-2xl p-6 border-2 border-blue-100">
+                      <p className="text-[10px] font-black text-blue-600 uppercase mb-2 tracking-widest">CNPJ</p>
+                      <p className="text-lg font-black text-blue-900 font-mono uppercase">{currentOrg?.cnpj || 'Não configurado'}</p>
+                    </div>
+
+                    {/* Linha 2: Telefone e Email */}
+                    <div className="bg-slate-50 rounded-2xl p-6 border-2 border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Telefone</p>
+                      <p className="text-lg font-bold text-slate-900">{currentOrg?.phone ? <a href={`tel:${currentOrg.phone}`} className="hover:text-indigo-600 transition-colors">{currentOrg.phone}</a> : 'Não configurado'}</p>
+                    </div>
+                    <div className="bg-slate-50 rounded-2xl p-6 border-2 border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Email</p>
+                      <p className="text-lg font-bold text-slate-900">{currentOrg?.email ? <a href={`mailto:${currentOrg.email}`} className="hover:text-indigo-600 transition-colors">{currentOrg.email}</a> : 'Não configurado'}</p>
+                    </div>
+
+                    {/* Linha 3: Responsável e Website */}
+                    <div className="bg-slate-50 rounded-2xl p-6 border-2 border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Responsável</p>
+                      <p className="text-lg font-bold text-slate-900">{currentOrg?.contact_person || 'Não configurado'}</p>
+                    </div>
+                    <div className="bg-slate-50 rounded-2xl p-6 border-2 border-slate-100">
+                      <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">Website</p>
+                      <p className="text-lg font-bold text-slate-900">{currentOrg?.website ? <a href={currentOrg.website} target="_blank" rel="noopener noreferrer" className="hover:text-indigo-600 transition-colors">{currentOrg.website}</a> : 'Não configurado'}</p>
+                    </div>
+                  </div>
+
+                  {/* Endereço completo */}
+                  <div className="bg-indigo-50 rounded-2xl p-6 border-2 border-indigo-100">
+                    <p className="text-[10px] font-black text-indigo-600 uppercase mb-3 tracking-widest">Endereço</p>
+                    <div className="space-y-2">
+                      {currentOrg?.address && <p className="font-bold text-slate-900">{currentOrg.address}</p>}
+                      {(currentOrg?.city || currentOrg?.state || currentOrg?.zip_code) && (
+                        <p className="text-sm font-bold text-slate-600">
+                          {currentOrg?.city && <span>{currentOrg.city}</span>}
+                          {currentOrg?.state && <span>{currentOrg.city ? ', ' : ''}{currentOrg.state.toUpperCase()}</span>}
+                          {currentOrg?.zip_code && <span>{currentOrg.city || currentOrg.state ? ' - ' : ''}{currentOrg.zip_code}</span>}
+                        </p>
+                      )}
+                      {!currentOrg?.address && !currentOrg?.city && !currentOrg?.state && !currentOrg?.zip_code && (
+                        <p className="text-slate-400 italic">Não configurado</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setIsEditingCompany(true)}
+                    className="w-full bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Edit3 size={18} /> Editar Informações
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleSaveCompanyInfo} className="p-6 md:p-8 space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Nome da Empresa *</label>
+                      <input required name="name" defaultValue={currentOrg?.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: Minha Empresa LTDA" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">CNPJ</label>
+                      <input name="cnpj" defaultValue={currentOrg?.cnpj || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-mono outline-none focus:border-indigo-600 transition-all" placeholder="XX.XXX.XXX/XXXX-XX" />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Telefone</label>
+                      <input name="phone" type="tel" defaultValue={currentOrg?.phone || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="+55 11 98765-4321" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Email</label>
+                      <input name="email" type="email" defaultValue={currentOrg?.email || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="contato@empresa.com.br" />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Responsável</label>
+                      <input name="contact_person" defaultValue={currentOrg?.contact_person || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Nome do proprietário" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Website</label>
+                      <input name="website" type="url" defaultValue={currentOrg?.website || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="https://www.empresa.com.br" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="md:col-span-2">
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Endereço (Rua, Número)</label>
+                      <input name="address" defaultValue={currentOrg?.address || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Rua Principal, 123" />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Cidade</label>
+                      <input name="city" defaultValue={currentOrg?.city || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="São Paulo" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Estado (UF)</label>
+                      <input name="state" defaultValue={currentOrg?.state || ''} maxLength={2} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="SP" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">CEP</label>
+                      <input name="zip_code" defaultValue={currentOrg?.zip_code || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="01234-567" />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <button type="button" onClick={() => setIsEditingCompany(false)} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase hover:text-slate-600 transition-colors">Cancelar</button>
+                    <button disabled={isSaving} type="submit" className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+                      {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                      {isSaving ? 'SALVANDO...' : 'GUARDAR'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Modais */}
@@ -1444,6 +2274,31 @@ const App = () => {
             <h3 className="text-2xl font-black uppercase tracking-tighter">{editingItem ? 'Editar' : 'Novo'} Produto</h3>
             <div className="space-y-4">
                 <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Nome do Item</label><input required name="name" defaultValue={editingItem?.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: Cimento 50kg" /></div>
+                
+                <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block flex items-center gap-1 tracking-widest"><Barcode size={12}/> Código de Barras (opcional)</label><input name="barcode" defaultValue={editingItem?.barcode} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: 1234567890123" /></div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block flex items-center gap-1 tracking-widest"><ImageIcon size={12}/> Imagem do Produto (opcional)</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-20 h-20 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden">
+                      {itemImagePreview ? (
+                        <img src={itemImagePreview} alt="Preview" className="w-full h-full object-cover" />
+                      ) : (
+                        <ImageIcon size={20} className="text-slate-300" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <input
+                        name="image"
+                        type="file"
+                        accept="image/*"
+                        onChange={handleItemImageChange}
+                        className="w-full p-3 bg-slate-50 border-2 rounded-2xl text-[10px] font-bold uppercase outline-none focus:border-indigo-600 transition-all"
+                      />
+                      <p className="text-[9px] text-slate-400 font-black uppercase mt-2">JPG ou PNG. A imagem sera reduzida automaticamente.</p>
+                    </div>
+                  </div>
+                </div>
                 
                 <div className="grid grid-cols-2 gap-4">
                     <div className="col-span-2">
@@ -1455,7 +2310,6 @@ const App = () => {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4">
-                  <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Vencimento</label><input name="expiry_date" type="date" defaultValue={editingItem?.expiry_date} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold transition-all" /></div>
                   {!editingItem && <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Inicial</label><input required name="quantity" type="number" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold transition-all" placeholder="0" /></div>}
                 </div>
             </div>
@@ -1463,7 +2317,7 @@ const App = () => {
                 {isSaving ? <Loader2 size={18} className="animate-spin"/> : <Save size={18}/>}
                 {isSaving ? 'SALVANDO...' : 'CONFIRMAR E SALVAR'}
             </button>
-            <button type="button" onClick={() => { setModalType(null); setEditingItem(null); }} className="w-full py-2 font-black text-[10px] uppercase text-slate-300 transition-colors hover:text-slate-400">Cancelar</button>
+            <button type="button" onClick={() => { setModalType(null); setEditingItem(null); setItemImageFile(null); setItemImagePreview(null); }} className="w-full py-2 font-black text-[10px] uppercase text-slate-300 transition-colors hover:text-slate-400">Cancelar</button>
           </form>
         </div>
       )}
@@ -1491,7 +2345,7 @@ const App = () => {
       {modalType === 'add-user' && isAdmin && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <form onSubmit={handleAddUser} className="bg-white rounded-[2.5rem] w-full max-w-md p-10 space-y-6 shadow-2xl relative animate-in zoom-in-95 duration-200">
-            <button type="button" onClick={() => setModalType(null)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-500 transition-colors"><X size={24}/></button>
+            <button type="button" onClick={() => { setModalType(null); setShowNewUserPass(false); }} className="absolute top-8 right-8 text-slate-300 hover:text-slate-500 transition-colors"><X size={24}/></button>
             <div className="text-center space-y-2">
                 <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm border border-indigo-100"><UserPlus size={32}/></div>
                 <h3 className="text-2xl font-black uppercase tracking-tighter">Adicionar Membro</h3>
@@ -1500,7 +2354,18 @@ const App = () => {
             <div className="space-y-4">
                 <input required name="name" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase focus:border-indigo-600 outline-none transition-all" placeholder="Nome Completo" />
                 <input required name="email" type="email" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold focus:border-indigo-600 outline-none transition-all" placeholder="E-mail de Acesso" />
-                <input required name="password" type="password" minLength={6} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold focus:border-indigo-600 outline-none transition-all" placeholder="Senha Inicial" />
+                <div className="relative">
+                  <input required name="password" type={showNewUserPass ? 'text' : 'password'} minLength={6} className="w-full p-4 pr-14 bg-slate-50 border-2 rounded-2xl font-bold focus:border-indigo-600 outline-none transition-all" placeholder="Senha Inicial" />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewUserPass(prev => !prev)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
+                    aria-label={showNewUserPass ? 'Ocultar senha' : 'Mostrar senha'}
+                    title={showNewUserPass ? 'Ocultar senha' : 'Mostrar senha'}
+                  >
+                    {showNewUserPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
                 <select name="role" required className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black text-xs uppercase focus:border-indigo-600 outline-none transition-all">
                     <option value="staff">Equipe (Somente Operação)</option>
                     <option value="admin">Gestor (Acesso Total)</option>
@@ -1527,6 +2392,31 @@ const App = () => {
                 </select>
             </div>
             <button disabled={isSaving} type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl mt-4 hover:bg-indigo-700 transition-all">Salvar Alterações</button>
+          </form>
+        </div>
+      )}
+
+      {modalType === 'supplier' && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <form onSubmit={handleSaveSupplier} className="bg-white rounded-[2.5rem] w-full max-w-md p-10 space-y-4 shadow-2xl relative animate-in zoom-in-95 duration-200 overflow-y-auto max-h-[90vh]">
+            <button type="button" onClick={() => { setModalType(null); setEditingSupplier(null); }} className="absolute top-8 right-8 text-slate-300 hover:text-slate-500 transition-colors"><X size={24}/></button>
+            <div className="text-center space-y-2 mb-2">
+              <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-indigo-100"><Building2 size={32}/></div>
+              <h3 className="text-2xl font-black uppercase tracking-tighter">{editingSupplier ? 'Editar' : 'Novo'} Fornecedor</h3>
+            </div>
+
+            <div className="space-y-4">
+              <input required name="name" defaultValue={editingSupplier?.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Nome do Fornecedor" />
+              <input name="contact_name" defaultValue={editingSupplier?.contact_name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Nome do Contato" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input name="phone" defaultValue={editingSupplier?.phone} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Telefone" />
+                <input name="email" type="email" defaultValue={editingSupplier?.email} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="E-mail" />
+              </div>
+              <input name="document" defaultValue={editingSupplier?.document} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="CNPJ / Documento" />
+              <textarea name="notes" defaultValue={editingSupplier?.notes} rows={3} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all resize-none" placeholder="Observações" />
+            </div>
+
+            <button disabled={isSaving} type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl mt-4 hover:bg-indigo-700 transition-all">{isSaving ? 'Aguarde...' : editingSupplier ? 'Salvar Alterações' : 'Cadastrar Fornecedor'}</button>
           </form>
         </div>
       )}
@@ -1609,6 +2499,78 @@ const App = () => {
                 {isSaving ? 'PROCESSANDO...' : 'CRIAR REQUISIÇÃO'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Modal de Redefinição de Senha */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl p-10 w-full max-w-md space-y-6 animate-in slide-in-from-bottom-8 duration-500">
+            <div className="text-center">
+              <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Lock size={32} className="text-indigo-600" />
+              </div>
+              <h2 className="text-2xl font-black uppercase tracking-tighter">Definir Nova Senha</h2>
+              <p className="text-[10px] text-slate-500 font-bold uppercase mt-2">Digite sua nova senha de acesso</p>
+            </div>
+
+            <form onSubmit={handleUpdatePassword} className="space-y-4">
+              {loginError && (
+                <div className={`p-4 ${loginError.type === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'} border rounded-xl text-[10px] font-black uppercase leading-relaxed flex gap-3 items-start`}>
+                  <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                  {loginError.message}
+                </div>
+              )}
+
+              <div className="relative">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Nova Senha</label>
+                <input 
+                  required 
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  minLength={6}
+                  className="w-full p-4 pr-14 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all"
+                  placeholder="Mínimo 6 caracteres"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword(prev => !prev)}
+                  className="absolute right-4 top-[52px] -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors"
+                  aria-label={showNewPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                >
+                  {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Confirmar Senha</label>
+                <input 
+                  required 
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  minLength={6}
+                  className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all"
+                  placeholder="Digite novamente"
+                />
+              </div>
+
+              <button disabled={isSaving} type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-tighter shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2">
+                {isSaving ? (
+                  <>
+                    <Loader2 size={18} className="animate-spin" />
+                    Atualizando...
+                  </>
+                ) : (
+                  <>
+                    <Lock size={18} />
+                    Atualizar Senha
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
         </div>
       )}
     </div>

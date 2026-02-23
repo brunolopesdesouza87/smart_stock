@@ -1,10 +1,16 @@
 RewriteEngine On
-RewriteBase /
+RewriteBase /smart_stock/
 
-# Permite acesso direto a arquivos e diretórios existentes
-RewriteCond %{REQUEST_FILENAME} -f [OR]
-RewriteCond %{REQUEST_FILENAME} -d
+# Sempre servir o build de produção
+DirectoryIndex dist/index.html
+
+# Assets gerados pelo Vite
+RewriteRule ^assets/(.*)$ dist/assets/$1 [L,NC]
+
+# Permite acesso direto a arquivos existentes
+RewriteCond %{REQUEST_FILENAME} -f
 RewriteRule ^ - [L]
 
-# Fallback para rotas SPA - redireciona tudo para index.html
-RewriteRule ^(.*)$ index.html [QSA,L]
+# Fallback para rotas SPA -> dist/index.html
+RewriteRule ^$ dist/index.html [L]
+RewriteRule . dist/index.html [L]
