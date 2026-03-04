@@ -68,8 +68,8 @@ const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
 type Role = 'admin' | 'staff';
 interface Organization { id: string; name: string; cnpj?: string; address?: string; city?: string; state?: string; zip_code?: string; phone?: string; contact_person?: string; email?: string; website?: string; logo_url?: string; }
 interface UserProfile { id: string; organization_id: string; email: string; role: Role; name: string; }
-interface Category { id: string; organization_id: string; name: string; }
-interface StockItem { id: string; organization_id: string; category_id: string; name: string; barcode?: string; unit: string; min_stock: number; quantity: number; price: number; last_count_date: string; expiry_date?: string; image_url?: string; last_responsible: string; }
+interface Category { id: string; organization_id: string; name: string; visible: boolean; }
+interface StockItem { id: string; organization_id: string; category_id: string; name: string; barcode?: string; unit: string; min_stock: number; quantity: number; price: number; margin?: number; sale_price?: number; last_count_date: string; expiry_date?: string; image_url?: string; last_responsible: string; }
 interface StockMovement { id: string; organization_id: string; item_id: string; item_name: string; type: 'in' | 'out' | 'set'; quantity: number; user_name: string; date: string; }
 interface SystemLog { id: string; organization_id: string; user_name: string; description: string; created_at: string; }
 interface ShoppingList { id: string; organization_id: string; requester_name: string; status: 'pending' | 'completed'; created_at: string; completed_at?: string; items?: ShoppingListItem[]; }
@@ -115,7 +115,13 @@ const App = () => {
   const [historyEndDate, setHistoryEndDate] = useState('');
   const [regCompany, setRegCompany] = useState(localStorage.getItem('pending_company') || '');
   const [loginError, setLoginError] = useState<{message: string, type: 'error' | 'success'} | null>(null);
-  const [modalType, setModalType] = useState<'category' | 'item' | 'add-user' | 'edit-user' | 'supplier' | 'confirm' | 'shopping-list' | null>(null);
+  const [subscriptionBlocked, setSubscriptionBlocked] = useState(false);
+  const [categoryError, setCategoryError] = useState('');
+  const [itemCostPrice, setItemCostPrice] = useState<string>('');
+  const [itemMargin, setItemMargin] = useState<string>('');
+  const [itemSalePrice, setItemSalePrice] = useState<string>('');
+  const [modalType, setModalType] = useState<'category' | 'rename-category' | 'item' | 'add-user' | 'edit-user' | 'supplier' | 'confirm' | 'shopping-list' | null>(null);
+  const [editingCategory, setEditingCategory] = useState<{id: string, name: string} | null>(null);
   const [editingItem, setEditingItem] = useState<StockItem | null>(null);
   const [editingMember, setEditingMember] = useState<UserProfile | null>(null);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
@@ -171,10 +177,16 @@ const App = () => {
     if (modalType !== 'item') {
       setItemImageFile(null);
       setItemImagePreview(null);
+      setItemCostPrice('');
+      setItemMargin('');
+      setItemSalePrice('');
       return;
     }
     setItemImageFile(null);
     setItemImagePreview(editingItem?.image_url || null);
+    setItemCostPrice(editingItem?.price?.toString() || '');
+    setItemMargin(editingItem?.margin != null ? editingItem.margin.toString() : '');
+    setItemSalePrice(editingItem?.sale_price?.toString() || '');
   }, [modalType, editingItem]);
 
   const checkDatabase = async () => {
@@ -208,6 +220,24 @@ const App = () => {
       
       if (error) throw error;
       if (profile) {
+        // Verificar se a organização possui assinatura ativa
+        const { data: subscription, error: subError } = await supabase
+          .from('Subscriptions')
+          .select('status')
+          .eq('organization_id', profile.organization_id)
+          .single();
+
+        if (subError || !subscription || subscription.status !== 'active') {
+          setSubscriptionBlocked(true); // bloqueia render ANTES do signOut para evitar race condition
+          await supabase.auth.signOut();
+          setLoginError({
+            message: "Sua assinatura está inativa ou expirada. Entre em contato com o suporte para renovar.",
+            type: 'error'
+          });
+          return;
+        }
+
+        setSubscriptionBlocked(false);
         setCurrentProfile(profile);
         setCurrentOrg(profile.organizations);
       }
@@ -659,6 +689,108 @@ const App = () => {
     }
   };
 
+  const handleDeleteProduct = async (item: StockItem) => {
+    // Verificar se tem movimentações de estoque ou vendas
+    const [movRes, saleRes] = await Promise.all([
+      supabase.from('movements').select('id', { count: 'exact', head: true }).eq('item_id', item.id),
+      supabase.from('sale_items').select('id', { count: 'exact', head: true }).eq('product_id', item.id)
+    ]);
+
+    const hasHistory = (movRes.count ?? 0) > 0 || (saleRes.count ?? 0) > 0;
+
+    if (hasHistory) {
+      // Produto com histórico: mover para categoria oculta (desativar)
+      if (!confirm(`"${item.name.toUpperCase()}" possui histórico de movimentações ou vendas e não pode ser excluído.\n\nDeseja DESATIVAR este produto? Ele será movido para uma categoria oculta e não aparecerá no PDV.`)) return;
+
+      try {
+        // Buscar ou criar categoria "INATIVOS"
+        let inactiveCategory = categories.find(c => c.visible === false);
+
+        if (!inactiveCategory) {
+          const { data: newCat, error: catError } = await supabase
+            .from('categories')
+            .insert({ organization_id: currentProfile!.organization_id, name: 'INATIVOS', visible: false })
+            .select()
+            .single();
+          if (catError) throw catError;
+          inactiveCategory = newCat;
+        }
+
+        const { error } = await supabase
+          .from('products')
+          .update({ category_id: inactiveCategory!.id })
+          .eq('id', item.id);
+        if (error) throw error;
+
+        await registerLog(`Produto desativado (movido para categoria oculta): ${item.name.toUpperCase()}`);
+        await fetchAppData();
+      } catch (err: any) {
+        alert(`Erro ao desativar produto: ${err.message}`);
+      }
+      return;
+    }
+
+    // Sem histórico: exclusão normal
+    if (!confirm(`Excluir permanentemente "${item.name.toUpperCase()}"? Esta ação não pode ser desfeita.`)) return;
+    try {
+      const { error } = await supabase.from('products').delete().eq('id', item.id);
+      if (error) throw error;
+      await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
+      await fetchAppData();
+    } catch (err: any) {
+      alert(`Erro ao excluir produto: ${err.message}`);
+    }
+  };
+
+  const handleToggleCategoryVisibility = async (cat: Category) => {
+    const newVisible = !cat.visible;
+    try {
+      const { error } = await supabase.from('categories').update({ visible: newVisible }).eq('id', cat.id);
+      if (error) throw error;
+      await registerLog(`Categoria "${cat.name}" ${newVisible ? 'visível' : 'oculta'} no PDV`);
+      await fetchAppData();
+    } catch (err: any) {
+      alert(`Erro ao atualizar visibilidade: ${err.message}`);
+    }
+  };
+
+  const handleRenameCategory = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!editingCategory) return;
+    setIsSaving(true);
+    const nameStr = new FormData(e.currentTarget).get('name') as string;
+    const upperName = nameStr.trim().toUpperCase();
+    try {
+      const { error } = await supabase.from('categories').update({ name: upperName }).eq('id', editingCategory.id);
+      if (error) throw error;
+      await registerLog(`Categoria renomeada: "${editingCategory.name}" → "${upperName}"`);
+      await fetchAppData();
+      setModalType(null);
+      setEditingCategory(null);
+    } catch (err: any) {
+      alert(`Erro ao renomear categoria: ${err.message}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteCategory = async (catId: string, catName: string) => {
+    const hasItems = items.some(i => i.category_id === catId);
+    if (hasItems) {
+      alert(`A categoria "${catName}" possui produtos.\nRemova todos os produtos antes de excluir a categoria.`);
+      return;
+    }
+    if (!confirm(`Excluir a categoria "${catName}"?\nEsta ação não pode ser desfeita.`)) return;
+    try {
+      const { error } = await supabase.from('categories').delete().eq('id', catId);
+      if (error) throw error;
+      await registerLog(`Categoria excluída: ${catName}`);
+      await fetchAppData();
+    } catch (err: any) {
+      alert(`Erro ao excluir categoria: ${err.message}`);
+    }
+  };
+
   const handleSaveSupplier = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!currentProfile) return;
@@ -817,12 +949,14 @@ const App = () => {
 
     const itemData = {
       organization_id: currentProfile.organization_id,
-      category_id: editingItem ? editingItem.category_id : targetId,
+      category_id: editingItem ? (fd.get('category_id') as string || editingItem.category_id) : targetId,
       name: name,
       barcode: (fd.get('barcode') as string) || null,
       unit: fd.get('unit') as string,
       min_stock: Number(fd.get('min_stock')),
-      price: Number(fd.get('price')) || 0,
+      price: Number(itemCostPrice) || 0,
+      margin: Number(itemMargin) || 0,
+      sale_price: Number(itemSalePrice) || 0,
       quantity: editingItem ? editingItem.quantity : Number(fd.get('quantity')),
       expiry_date: fd.get('expiry_date') || null,
       image_url: imageUrl,
@@ -1141,7 +1275,7 @@ const App = () => {
 
   if (isLoadingAuth) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><Loader2 className="animate-spin text-indigo-600" size={48} /></div>;
 
-  if (session && !currentProfile) return (
+  if (session && !currentProfile && !subscriptionBlocked) return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
       <form onSubmit={completeSetup} className="bg-white p-10 rounded-[2.5rem] shadow-2xl w-full max-w-md space-y-8 animate-in fade-in zoom-in duration-300">
         <Building2 size={40} className="text-amber-500 mx-auto" />
@@ -1185,9 +1319,6 @@ const App = () => {
           <button onClick={onGetStarted} className="px-10 py-5 bg-indigo-600 text-white rounded-2xl font-black text-lg hover:bg-indigo-700 transition-all shadow-2xl shadow-indigo-200 flex items-center justify-center gap-2">
             <Zap size={22} /> Comece Agora
           </button>
-          <a href="#plans" className="px-10 py-5 bg-white border-2 border-slate-300 text-slate-900 rounded-2xl font-black text-lg hover:border-indigo-400 transition-all">
-            Ver Planos
-          </a>
         </div>
       </section>
 
@@ -1242,53 +1373,6 @@ const App = () => {
         </div>
       </section>
 
-      {/* Pricing Section */}
-      <section id="plans" className="py-20 bg-white">
-        <div className="max-w-7xl mx-auto px-6 md:px-10">
-          <h2 className="text-4xl font-black text-center mb-4 text-slate-900">Escolha Seu Plano</h2>
-          <p className="text-center text-slate-600 font-bold mb-16">Todos os planos incluem as mesmas funcionalidades. Escolha a duração que mais faz sentido para você.</p>
-          <p className="text-center text-xs font-bold text-slate-500 mb-8">
-            Links diretos: 
-            <a href="https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=O8V4AZ3" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline ml-1">Mensal</a>
-            {' • '}
-            <a href="https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=79WJJXU" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Trimestral</a>
-            {' • '}
-            <a href="https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=N05F6RS" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Semestral</a>
-            {' • '}
-            <a href="https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=6JLSDU6" target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Anual</a>
-          </p>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {[
-              { name: "Mensal", price: "47,90", period: "/mês", popular: false, link: "https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=O8V4AZ3", features: ["Acesso completo ao sistema", "Usuários ilimitados", "Suporte por WhatsApp", "Cancelamento a qualquer momento"] },
-              { name: "Trimestral", price: "99,90", period: "/trimestre", popular: true, link: "https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=79WJJXU", features: ["Tudo do plano mensal", "Economia de 30%", "Acesso por 3 meses", "Melhor custo-benefício"] },
-              { name: "Semestral", price: "169,90", period: "/semestre", popular: false, link: "https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=N05F6RS", features: ["Tudo do plano mensal", "Economia de 41%", "Acesso por 6 meses", "Ideal para consolidar"] },
-              { name: "Anual", price: "299,90", period: "/ano", popular: false, link: "https://checkout.nexano.com.br/checkout/cmlv5laga00hc1ynw0eeeafab?offer=6JLSDU6", features: ["Tudo do plano mensal", "Economia de 48%", "Acesso por 12 meses", "Melhor preço do ano"] },
-            ].map((plan, i) => (
-              <div key={i} className={`relative p-8 rounded-2xl border-2 transition-all ${plan.popular ? 'bg-indigo-600 text-white border-indigo-600 scale-105 shadow-2xl shadow-indigo-200' : 'bg-white border-slate-200 hover:border-indigo-300'}`}>
-                {plan.popular && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-white px-4 py-1 rounded-full text-xs font-black">MAIS POPULAR</div>}
-                <h3 className={`text-2xl font-black mb-2 ${plan.popular ? 'text-white' : 'text-slate-900'}`}>{plan.name}</h3>
-                <div className="mb-6">
-                  <span className={`text-4xl font-black ${plan.popular ? 'text-white' : 'text-indigo-600'}`}>R$ {plan.price}</span>
-                  <span className={`text-sm font-bold ${plan.popular ? 'text-indigo-100' : 'text-slate-500'}`}>{plan.period}</span>
-                </div>
-                <ul className="space-y-3 mb-8">
-                  {plan.features.map((feat, j) => (
-                    <li key={j} className="flex items-start gap-3">
-                      <CheckCircle2 size={20} className={plan.popular ? 'text-emerald-400' : 'text-emerald-500'} />
-                      <span className={`text-sm font-bold ${plan.popular ? 'text-indigo-100' : 'text-slate-700'}`}>{feat}</span>
-                    </li>
-                  ))}
-                </ul>
-                <a href={plan.link} target="_blank" rel="noopener noreferrer" className={`block text-center w-full py-4 rounded-xl font-black text-sm uppercase tracking-wider transition-all ${plan.popular ? 'bg-white text-indigo-600 hover:bg-slate-100' : 'bg-indigo-600 text-white hover:bg-indigo-700'} shadow-lg`}>
-                  Contratar Agora
-                </a>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* FAQ Section */}
       <section className="py-20 bg-slate-50">
         <div className="max-w-3xl mx-auto px-6">
@@ -1296,7 +1380,6 @@ const App = () => {
           <div className="space-y-4">
             {[
               { q: "Como funciona o cancelamento?", a: "Você pode cancelar sua assinatura a qualquer momento sem multas ou taxas. O acesso segue até o final do período pago." },
-              { q: "Posso trocar de plano depois?", a: "Sim! Você pode fazer upgrade ou downgrade do seu plano a qualquer momento. O crédito é calculado proporcionalmente." },
               { q: "E se eu não souber usar?", a: "Oferecemos documentação completa, tutorials em vídeo e suporte via WhatsApp para ajudar seu time." },
               { q: "Meus dados estão seguros?", a: "Seus dados são protegidos em servidores seguros com backup automático. Você tem total controle e pode exportar tudo quando quiser." },
             ].map((item, i) => (
@@ -1588,16 +1671,46 @@ const App = () => {
                 )
               );
               
-              if (filteredItems.length === 0 && !inventorySearch) return null;
               if (filteredItems.length === 0 && inventorySearch) return null;
               
               return (
                 <div key={cat.id} className="space-y-4">
                   <div className="flex justify-between items-center px-4">
-                    <h2 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-3"><div className="w-2 h-6 bg-indigo-600 rounded-full"></div>{cat.name}</h2>
-                    <button onClick={() => { setTargetId(cat.id); setModalType('item'); }} className="text-[10px] font-black bg-slate-100 px-4 py-2 rounded-lg hover:bg-slate-200 transition-all uppercase">+ ADICIONAR ITEM</button>
+                    <h2 className={`text-2xl font-black uppercase tracking-tighter flex items-center gap-3 ${cat.visible === false ? 'opacity-40' : ''}`}>
+                      <div className="w-2 h-6 bg-indigo-600 rounded-full"></div>{cat.name}
+                      {cat.visible === false && <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-400 px-2 py-1 rounded-lg border">Oculta no PDV</span>}
+                    </h2>
+                    <div className="flex items-center gap-2">
+                      {isAdmin && (
+                        <>
+                          <button
+                            onClick={() => handleToggleCategoryVisibility(cat)}
+                            title={cat.visible !== false ? 'Visível no PDV (clique para ocultar)' : 'Oculta no PDV (clique para exibir)'}
+                            className={`p-2 transition-colors ${cat.visible !== false ? 'text-indigo-400 hover:text-indigo-600' : 'text-slate-300 hover:text-slate-500'}`}
+                          >{cat.visible !== false ? <Eye size={16}/> : <EyeOff size={16}/>}</button>
+                          <button
+                            onClick={() => { setEditingCategory({ id: cat.id, name: cat.name }); setModalType('rename-category'); }}
+                            title="Renomear categoria"
+                            className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"
+                          ><Edit3 size={16}/></button>
+                          <button
+                            onClick={() => handleDeleteCategory(cat.id, cat.name)}
+                            title="Excluir categoria"
+                            className="p-2 text-slate-300 hover:text-rose-600 transition-colors"
+                          ><Trash2 size={16}/></button>
+                        </>
+                      )}
+                      <button onClick={() => { setTargetId(cat.id); setModalType('item'); }} className="text-[10px] font-black bg-slate-100 px-4 py-2 rounded-lg hover:bg-slate-200 transition-all uppercase">+ ADICIONAR ITEM</button>
+                    </div>
                   </div>
-                  <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm">
+                  {filteredItems.length === 0 ? (
+                    <div className={`bg-white border-2 border-dashed rounded-[2.5rem] p-10 text-center space-y-3 ${cat.visible === false ? 'opacity-50' : ''}`}>
+                      <Package size={32} className="mx-auto text-slate-200" />
+                      <p className="text-slate-400 font-black uppercase text-[10px] tracking-widest">Categoria vazia. Adicione o primeiro produto.</p>
+                      <button onClick={() => { setTargetId(cat.id); setModalType('item'); }} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black text-[10px] uppercase shadow-lg hover:bg-indigo-700 transition-all">+ ADICIONAR ITEM</button>
+                    </div>
+                  ) : (
+                    <div className="bg-white rounded-[2.5rem] border overflow-hidden shadow-sm">
                     {/* Desktop Table */}
                     <div className="hidden md:block overflow-x-auto">
                       <table className="w-full text-left">
@@ -1616,13 +1729,7 @@ const App = () => {
                                 <td className="px-8 py-6 text-center font-black text-lg text-indigo-600">R$ {totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
                                 <td className="px-8 py-6 text-right space-x-2">
                                     <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
-                                    <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
-                                        const { error } = await supabase.from('products').delete().eq('id', item.id); 
-                                        if(!error) {
-                                            await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
-                                            await fetchAppData(); 
-                                        }
-                                    } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                                    <button onClick={() => handleDeleteProduct(item)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors" title="Excluir ou desativar produto"><Trash2 size={18}/></button>
                                 </td>
                               </tr>
                             );
@@ -1644,13 +1751,7 @@ const App = () => {
                               </div>
                               <div className="flex gap-2">
                                 <button onClick={() => { setEditingItem(item); setModalType('item'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
-                                <button onClick={async () => { if(confirm(`Excluir ${item.name.toUpperCase()}?`)) { 
-                                    const { error } = await supabase.from('products').delete().eq('id', item.id); 
-                                    if(!error) {
-                                        await registerLog(`Produto excluído permanentemente: ${item.name.toUpperCase()}`);
-                                        await fetchAppData(); 
-                                    }
-                                } }} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                                <button onClick={() => handleDeleteProduct(item)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors" title="Excluir ou desativar produto"><Trash2 size={16}/></button>
                               </div>
                             </div>
                             <div className="grid grid-cols-3 gap-3 text-[10px]">
@@ -1671,7 +1772,8 @@ const App = () => {
                         );
                       })}
                     </div>
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1892,7 +1994,9 @@ const App = () => {
                           {currentProfile?.role === 'admin' && (
                               <>
                                   <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
-                                  <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                                  {member.id !== currentProfile?.id && (
+                                    <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
+                                  )}
                               </>
                           )}
                         </td>
@@ -1921,7 +2025,9 @@ const App = () => {
                           {currentProfile?.role === 'admin' && (
                             <div className="flex gap-1">
                               <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
-                              <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                              {member.id !== currentProfile?.id && (
+                                <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2274,6 +2380,19 @@ const App = () => {
             <h3 className="text-2xl font-black uppercase tracking-tighter">{editingItem ? 'Editar' : 'Novo'} Produto</h3>
             <div className="space-y-4">
                 <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Nome do Item</label><input required name="name" defaultValue={editingItem?.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: Cimento 50kg" /></div>
+
+                {editingItem && (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Categoria</label>
+                    <select name="category_id" defaultValue={editingItem.category_id} required className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black text-xs uppercase outline-none focus:border-indigo-600 transition-all">
+                      {categories.map(cat => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name}{cat.visible === false ? ' (Oculta no PDV)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 
                 <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block flex items-center gap-1 tracking-widest"><Barcode size={12}/> Código de Barras (opcional)</label><input name="barcode" defaultValue={editingItem?.barcode} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: 1234567890123" /></div>
 
@@ -2303,7 +2422,33 @@ const App = () => {
                 <div className="grid grid-cols-2 gap-4">
                     <div className="col-span-2">
                         <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block flex items-center gap-1 tracking-widest"><DollarSign size={12}/> Preço de Custo (R$)</label>
-                        <input required name="price" type="number" step="0.01" defaultValue={editingItem?.price} className="w-full p-4 bg-indigo-50 border-2 border-indigo-100 rounded-2xl font-black text-indigo-700 outline-none focus:border-indigo-500 transition-all shadow-inner" placeholder="0,00" />
+                        <input required type="number" step="0.01" value={itemCostPrice} onChange={e => {
+                          const cost = e.target.value;
+                          setItemCostPrice(cost);
+                          const c = parseFloat(cost);
+                          const m = parseFloat(itemMargin);
+                          if (!isNaN(c) && !isNaN(m) && c > 0) setItemSalePrice((c * (1 + m / 100)).toFixed(2));
+                        }} className="w-full p-4 bg-indigo-50 border-2 border-indigo-100 rounded-2xl font-black text-indigo-700 outline-none focus:border-indigo-500 transition-all shadow-inner" placeholder="0,00" />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block flex items-center gap-1 tracking-widest"><TrendingUp size={12}/> Margem (%)</label>
+                        <input type="number" step="0.01" value={itemMargin} onChange={e => {
+                          const margin = e.target.value;
+                          setItemMargin(margin);
+                          const c = parseFloat(itemCostPrice);
+                          const m = parseFloat(margin);
+                          if (!isNaN(c) && !isNaN(m) && c > 0) setItemSalePrice((c * (1 + m / 100)).toFixed(2));
+                        }} className="w-full p-4 bg-emerald-50 border-2 border-emerald-100 rounded-2xl font-black text-emerald-700 outline-none focus:border-emerald-500 transition-all shadow-inner" placeholder="0,00" />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block flex items-center gap-1 tracking-widest"><Tags size={12}/> Preço de Venda (R$)</label>
+                        <input type="number" step="0.01" value={itemSalePrice} onChange={e => {
+                          const sale = e.target.value;
+                          setItemSalePrice(sale);
+                          const c = parseFloat(itemCostPrice);
+                          const s = parseFloat(sale);
+                          if (!isNaN(c) && !isNaN(s) && c > 0) setItemMargin(((s - c) / c * 100).toFixed(2));
+                        }} className="w-full p-4 bg-amber-50 border-2 border-amber-100 rounded-2xl font-black text-amber-700 outline-none focus:border-amber-500 transition-all shadow-inner" placeholder="0,00" />
                     </div>
                     <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Unidade</label><input required name="unit" defaultValue={editingItem?.unit} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase transition-all" placeholder="un, kg, lt" /></div>
                     <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Estoque Mín.</label><input required name="min_stock" type="number" defaultValue={editingItem?.min_stock} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold transition-all" placeholder="0" /></div>
@@ -2326,18 +2471,47 @@ const App = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <form onSubmit={async (e) => {
             e.preventDefault();
+            setCategoryError('');
+            setIsSaving(true);
             const nameStr = new FormData(e.currentTarget).get('name') as string;
             const upperName = nameStr.toUpperCase();
-            const { error } = await supabase.from('categories').insert({ organization_id: currentProfile?.organization_id, name: upperName });
-            if(!error) {
-                await registerLog(`Nova categoria criada: ${upperName}`);
-                await fetchAppData(); 
-                setModalType(null);
+            try {
+              const { data, error } = await supabase.from('categories').insert({ organization_id: currentProfile?.organization_id, name: upperName }).select();
+              if (error) throw error;
+              if (!data || data.length === 0) {
+                throw new Error('Categoria não foi inserida. Verifique as políticas RLS da tabela "categories" no Supabase (INSERT policy).');
+              }
+              await registerLog(`Nova categoria criada: ${upperName}`);
+              await fetchAppData();
+              setModalType(null);
+            } catch (err: any) {
+              setCategoryError(err.message || 'Erro desconhecido ao salvar categoria.');
+            } finally {
+              setIsSaving(false);
             }
           }} className="bg-white rounded-[2.5rem] w-full max-w-sm p-10 space-y-6 shadow-2xl animate-in zoom-in-95 duration-200">
             <h3 className="text-2xl font-black uppercase tracking-tighter">Nova Categoria</h3>
             <input required name="name" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: Hidráulica" autoFocus />
-            <div className="flex gap-3"><button type="button" onClick={() => setModalType(null)} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Voltar</button><button type="submit" className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all">Salvar</button></div>
+            {categoryError && <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-xl p-3">{categoryError}</p>}
+            <div className="flex gap-3"><button type="button" onClick={() => { setModalType(null); setCategoryError(''); }} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Voltar</button><button type="submit" disabled={isSaving} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all disabled:opacity-60">{isSaving ? 'Salvando...' : 'Salvar'}</button></div>
+          </form>
+        </div>
+      )}
+
+      {modalType === 'rename-category' && editingCategory && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <form onSubmit={handleRenameCategory} className="bg-white rounded-[2.5rem] w-full max-w-sm p-10 space-y-6 shadow-2xl animate-in zoom-in-95 duration-200 relative">
+            <button type="button" onClick={() => { setModalType(null); setEditingCategory(null); }} className="absolute top-8 right-8 text-slate-300 hover:text-slate-500 transition-colors"><X size={24}/></button>
+            <div className="text-center space-y-2">
+              <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-indigo-100"><Edit3 size={32}/></div>
+              <h3 className="text-2xl font-black uppercase tracking-tighter">Renomear Categoria</h3>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nome atual: {editingCategory.name}</p>
+            </div>
+            <input required name="name" defaultValue={editingCategory.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Novo nome" autoFocus />
+            <div className="flex gap-3">
+              <button type="button" onClick={() => { setModalType(null); setEditingCategory(null); }} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Cancelar</button>
+              <button type="submit" disabled={isSaving} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all disabled:opacity-60">{isSaving ? 'Salvando...' : 'Renomear'}</button>
+            </div>
           </form>
         </div>
       )}
@@ -2386,10 +2560,13 @@ const App = () => {
             </div>
             <div className="space-y-4">
                 <input required name="name" defaultValue={editingMember.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Nome" />
-                <select name="role" defaultValue={editingMember.role} required className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black text-xs uppercase outline-none focus:border-indigo-600 transition-all">
+                <select name="role" defaultValue={editingMember.role} required disabled={editingMember.id === currentProfile?.id} className={`w-full p-4 bg-slate-50 border-2 rounded-2xl font-black text-xs uppercase outline-none transition-all ${editingMember.id === currentProfile?.id ? 'opacity-50 cursor-not-allowed' : 'focus:border-indigo-600'}`}>
                     <option value="staff">Staff</option>
                     <option value="admin">Admin</option>
                 </select>
+                {editingMember.id === currentProfile?.id && (
+                  <p className="text-[10px] font-black uppercase text-amber-500 tracking-widest">⚠ Você não pode alterar seu próprio cargo.</p>
+                )}
             </div>
             <button disabled={isSaving} type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl mt-4 hover:bg-indigo-700 transition-all">Salvar Alterações</button>
           </form>
