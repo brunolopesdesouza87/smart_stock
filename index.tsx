@@ -66,7 +66,7 @@ const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // --- Tipos ---
 type Role = 'admin' | 'staff';
-interface Organization { id: string; name: string; cnpj?: string; address?: string; city?: string; state?: string; zip_code?: string; phone?: string; contact_person?: string; email?: string; website?: string; logo_url?: string; }
+interface Organization { id: string; name: string; cnpj?: string; address?: string; neighborhood?: string; complement?: string; city?: string; state?: string; zip_code?: string; phone?: string; contact_person?: string; email?: string; website?: string; logo_url?: string; }
 interface UserProfile { id: string; organization_id: string; email: string; role: Role; name: string; }
 interface Category { id: string; organization_id: string; name: string; visible: boolean; }
 interface StockItem { id: string; organization_id: string; category_id: string; name: string; barcode?: string; unit: string; min_stock: number; quantity: number; price: number; margin?: number; sale_price?: number; last_count_date: string; expiry_date?: string; image_url?: string; last_responsible: string; }
@@ -120,7 +120,8 @@ const App = () => {
   const [itemCostPrice, setItemCostPrice] = useState<string>('');
   const [itemMargin, setItemMargin] = useState<string>('');
   const [itemSalePrice, setItemSalePrice] = useState<string>('');
-  const [modalType, setModalType] = useState<'category' | 'rename-category' | 'item' | 'add-user' | 'edit-user' | 'supplier' | 'confirm' | 'shopping-list' | null>(null);
+  const [modalType, setModalType] = useState<'category' | 'rename-category' | 'item' | 'add-user' | 'edit-user' | 'supplier' | 'confirm' | 'shopping-list' | 'change-password' | null>(null);
+  const [changingPasswordFor, setChangingPasswordFor] = useState<UserProfile | null>(null);
   const [editingCategory, setEditingCategory] = useState<{id: string, name: string} | null>(null);
   const [editingItem, setEditingItem] = useState<StockItem | null>(null);
   const [editingMember, setEditingMember] = useState<UserProfile | null>(null);
@@ -624,7 +625,25 @@ const App = () => {
       const tempSupabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
       const { data: authData, error: authError } = await tempSupabase.auth.signUp({ email, password, options: { data: { name } } });
 
-      if (authError) throw authError;
+      if (authError) {
+        // Usuário já cadastrado no Auth — tenta vincular pelo perfil existente
+        if (authError.message?.toLowerCase().includes('already registered') || authError.message?.toLowerCase().includes('already been registered')) {
+          const { data: existingProfile } = await supabase.from('profiles').select('id, organization_id').eq('email', email).maybeSingle();
+          if (existingProfile && existingProfile.organization_id === currentOrg.id) {
+            alert("⚠️ Este e-mail já pertence a um membro desta equipe.");
+            return;
+          }
+          if (existingProfile && existingProfile.organization_id !== currentOrg.id) {
+            alert("⚠️ Este e-mail já está cadastrado em outra organização e não pode ser adicionado aqui.");
+            return;
+          }
+          // Perfil não existe ainda — usuário está no Auth mas sem perfil nesta org
+          // Não é possível obter o ID sem a senha atual; orientar admin
+          alert("⚠️ Este e-mail já está registrado no sistema.\n\nSe este usuário pertence à sua equipe, peça para ele fazer login e entre em contato com o suporte para vinculá-lo à sua organização.");
+          return;
+        }
+        throw authError;
+      }
 
       if (authData.user) {
         await supabase.from('profiles').insert({
@@ -646,6 +665,56 @@ const App = () => {
       } else {
         alert("Erro ao adicionar membro: " + err.message);
       }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openChangePassword = (member: UserProfile) => {
+    setChangingPasswordFor(member);
+    setNewPassword('');
+    setConfirmPassword('');
+    setLoginError(null);
+    setModalType('change-password');
+  };
+
+  const handleChangePassword = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setLoginError({message: 'As senhas não coincidem.', type: 'error'});
+      return;
+    }
+    if (newPassword.length < 6) {
+      setLoginError({message: 'A senha deve ter pelo menos 6 caracteres.', type: 'error'});
+      return;
+    }
+    setLoginError(null);
+    setIsSaving(true);
+    try {
+      const isSelf = !changingPasswordFor || changingPasswordFor.id === currentProfile?.id;
+      if (isSelf) {
+        const { error } = await supabase.auth.updateUser({ password: newPassword });
+        if (error) throw error;
+      } else {
+        const res = await fetch('http://localhost:8787/api/admin/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: changingPasswordFor!.id, newPassword })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao alterar senha');
+        await registerLog(`Senha alterada pelo admin para: ${changingPasswordFor!.name.toUpperCase()}`);
+      }
+      setLoginError({message: 'Senha alterada com sucesso!', type: 'success'});
+      setTimeout(() => {
+        setModalType(null);
+        setChangingPasswordFor(null);
+        setNewPassword('');
+        setConfirmPassword('');
+        setLoginError(null);
+      }, 2000);
+    } catch (err: any) {
+      setLoginError({message: err.message, type: 'error'});
     } finally {
       setIsSaving(false);
     }
@@ -983,6 +1052,9 @@ const App = () => {
     setIsSaving(false);
   };
 
+  const maskCnpj = (v: string) => v.replace(/\D/g,'').slice(0,14).replace(/(\d{2})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1.$2').replace(/(\d{3})(\d)/,'$1/$2').replace(/(\d{4})(\d)/,'$1-$2');
+  const maskPhone = (v: string) => { const d = v.replace(/\D/g,'').slice(0,11); if(d.length<=10) return d.replace(/(\d{2})(\d{4})(\d*)/,'($1) $2-$3'); return d.replace(/(\d{2})(\d{5})(\d*)/,'($1) $2-$3'); };
+
   const handleSaveCompanyInfo = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!currentOrg) return;
@@ -992,6 +1064,8 @@ const App = () => {
       name: fd.get('name') as string,
       cnpj: (fd.get('cnpj') as string) || null,
       address: (fd.get('address') as string) || null,
+      neighborhood: (fd.get('neighborhood') as string) || null,
+      complement: (fd.get('complement') as string) || null,
       city: (fd.get('city') as string) || null,
       state: (fd.get('state') as string) || null,
       zip_code: (fd.get('zip_code') as string) || null,
@@ -1521,7 +1595,7 @@ const App = () => {
         <div className="text-indigo-600 font-black text-3xl flex items-center gap-3"><Package /> SmartStock</div>
         <nav className="flex flex-col gap-2 flex-1">
           <button onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><LayoutDashboard size={20}/> Painel</button>
-          {isAdmin && <button onClick={() => setActiveTab('inventory')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'inventory' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Tags size={20}/> Inventário</button>}
+          {isAdmin && <button onClick={() => setActiveTab('inventory')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'inventory' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Tags size={20}/> Estoque</button>}
           {isAdmin && <button onClick={() => setActiveTab('suppliers')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'suppliers' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><Building2 size={20}/> Fornecedores</button>}
           <button onClick={() => setActiveTab('quick-entry')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'quick-entry' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><ClipboardList size={20}/> Lançamentos</button>
           <button onClick={() => setActiveTab('shopping-list')} className={`flex items-center gap-4 px-5 py-4 rounded-2xl font-bold transition-all ${activeTab === 'shopping-list' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-50'}`}><ShoppingCart size={20}/> Compras</button>
@@ -1534,6 +1608,7 @@ const App = () => {
                 <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-black uppercase shadow-sm border border-white">{currentProfile?.name.charAt(0)}</div>
                 <div className="overflow-hidden"><p className="font-bold text-xs truncate uppercase tracking-tighter">{currentProfile?.name}</p><p className="text-[9px] text-indigo-500 uppercase font-black tracking-widest">{currentProfile?.role}</p></div>
             </div>
+            <button onClick={() => openChangePassword(currentProfile!)} className="flex items-center gap-4 text-slate-400 font-bold px-5 hover:text-indigo-600 transition-colors w-full mb-1"><KeyRound size={20}/> Alterar Senha</button>
             <button onClick={handleLogout} className="flex items-center gap-4 text-rose-500 font-bold px-5 hover:text-rose-700 transition-colors w-full"><LogOut size={20}/> Sair</button>
         </div>
       </aside>
@@ -1544,7 +1619,7 @@ const App = () => {
           <div className="flex items-center gap-3 w-full">
             <button onClick={() => setSidebarOpen(!sidebarOpen)} className="md:hidden p-2 hover:bg-slate-100 rounded-lg flex-shrink-0"><Menu size={24} className="text-slate-600" /></button>
             <div className="flex-1">
-              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'suppliers' ? 'Cadastro de Fornecedores' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'inventory' ? 'Inventário' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'company' ? 'Informações da Empresa' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
+              <h1 className="text-2xl md:text-4xl font-black uppercase tracking-tighter">{activeTab === 'users' ? 'Gestão de Equipe' : activeTab === 'suppliers' ? 'Cadastro de Fornecedores' : activeTab === 'quick-entry' ? 'Entradas Rápidas' : activeTab === 'inventory' ? 'Estoque' : activeTab === 'history' ? 'Trilha de Auditoria' : activeTab === 'company' ? 'Informações da Empresa' : activeTab === 'shopping-list' ? 'Requisições de Compra' : activeTab}</h1>
               <p className="text-[8px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest hidden md:block">{currentOrg?.name} • Painel Administrativo</p>
             </div>
           </div>
@@ -1593,7 +1668,7 @@ const App = () => {
                         <p className="text-[10px] font-black uppercase mb-2 opacity-90">Produtos</p>
                         <h3 className="text-4xl font-black">{items.length}</h3>
                     </div>
-                    <p className="text-[9px] font-bold uppercase mt-4 opacity-70">No Inventário</p>
+                    <p className="text-[9px] font-bold uppercase mt-4 opacity-70">No Estoque</p>
                 </div>
                 <div className="bg-rose-600 p-6 rounded-[2rem] text-white shadow-lg shadow-rose-200 flex flex-col justify-between hover:shadow-rose-300 transition-all group overflow-hidden relative">
                     <div className="absolute -right-3 -bottom-3 opacity-10">
@@ -1715,7 +1790,7 @@ const App = () => {
                     <div className="hidden md:block overflow-x-auto">
                       <table className="w-full text-left">
                         <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
-                          <tr><th className="px-8 py-4">Produto</th><th className="px-8 py-4 text-center">Código</th><th className="px-8 py-4 text-center">Saldo</th><th className="px-8 py-4 text-center">Preço Un.</th><th className="px-8 py-4 text-center">Valor Total</th><th className="px-8 py-4 text-right">Ações</th></tr>
+                          <tr><th className="px-8 py-4">Produto</th><th className="px-8 py-4 text-center">Código</th><th className="px-8 py-4 text-center">Estoque</th><th className="px-8 py-4 text-center">Preço custo Un.</th><th className="px-8 py-4 text-center">Valor Total</th><th className="px-8 py-4 text-right">Ações</th></tr>
                         </thead>
                         <tbody className="divide-y text-sm text-slate-700">
                           {filteredItems.map(item => {
@@ -1756,11 +1831,11 @@ const App = () => {
                             </div>
                             <div className="grid grid-cols-3 gap-3 text-[10px]">
                               <div>
-                                <p className="text-slate-400 font-black uppercase mb-1">Saldo</p>
+                                <p className="text-slate-400 font-black uppercase mb-1">Estoque</p>
                                 <p className={`font-black text-lg ${item.quantity <= item.min_stock ? 'text-rose-600' : 'text-slate-900'}`}>{item.quantity}</p>
                               </div>
                               <div>
-                                <p className="text-slate-400 font-black uppercase mb-1">Preço</p>
+                                <p className="text-slate-400 font-black uppercase mb-1">Preço custo</p>
                                 <p className="font-bold text-slate-500 tracking-tighter">R$ {item.price?.toLocaleString('pt-BR', { minimumFractionDigits: 2 }) || '0,00'}</p>
                               </div>
                             </div>
@@ -1832,7 +1907,7 @@ const App = () => {
                     <div className="hidden md:block overflow-x-auto">
                       <table className="w-full text-left">
                         <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase border-b">
-                          <tr><th className="px-8 py-6">Item</th><th className="px-8 py-6 text-center">Código</th><th className="px-8 py-6 text-center">Saldo Atual</th><th className="px-8 py-6 text-center">Novo Saldo</th></tr>
+                          <tr><th className="px-8 py-6">Item</th><th className="px-8 py-6 text-center">Código</th><th className="px-8 py-6 text-center">Estoque Atual</th><th className="px-8 py-6 text-center">Novo Estoque</th></tr>
                         </thead>
                         <tbody className="divide-y">
                           {catItems.map(item => (
@@ -1864,11 +1939,11 @@ const App = () => {
                           {item.barcode && <p className="text-[10px] font-mono font-bold text-slate-500">📦 {item.barcode}</p>}
                           <div className="space-y-3">
                             <div>
-                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Saldo Atual</p>
+                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Estoque Atual</p>
                               <p className="text-[10px] text-slate-600 font-bold uppercase">{item.quantity} {item.unit}</p>
                             </div>
                             <div>
-                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Novo Saldo</p>
+                              <p className="text-[10px] font-black text-slate-400 uppercase mb-2">Novo Estoque</p>
                               <input 
                                 type="number" 
                                 inputMode="numeric"
@@ -1993,7 +2068,8 @@ const App = () => {
                         <td className="px-8 py-6 text-right space-x-2">
                           {currentProfile?.role === 'admin' && (
                               <>
-                                  <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={18}/></button>
+                                  <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors" title="Editar perfil"><Edit3 size={18}/></button>
+                                  <button onClick={() => openChangePassword(member)} className="p-2 text-slate-300 hover:text-amber-500 transition-colors" title="Alterar senha"><KeyRound size={18}/></button>
                                   {member.id !== currentProfile?.id && (
                                     <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={18}/></button>
                                   )}
@@ -2024,7 +2100,8 @@ const App = () => {
                           </span>
                           {currentProfile?.role === 'admin' && (
                             <div className="flex gap-1">
-                              <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"><Edit3 size={16}/></button>
+                              <button onClick={() => { setEditingMember(member); setModalType('edit-user'); }} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors" title="Editar perfil"><Edit3 size={16}/></button>
+                              <button onClick={() => openChangePassword(member)} className="p-2 text-slate-300 hover:text-amber-500 transition-colors" title="Alterar senha"><KeyRound size={16}/></button>
                               {member.id !== currentProfile?.id && (
                                 <button onClick={() => handleDeleteUser(member.id)} className="p-2 text-slate-300 hover:text-rose-600 transition-colors"><Trash2 size={16}/></button>
                               )}
@@ -2155,7 +2232,7 @@ const App = () => {
                     setHistoryStartDate('');
                     setHistoryEndDate('');
                   }}
-                  className="w-full p-3 bg-white border-2 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-500 hover:bg-slate-50 transition-all"
+                  className="w-full p-3 bg-rose-50 border-2 border-rose-100 rounded-xl text-[10px] font-black uppercase tracking-wider text-rose-500 hover:bg-rose-100 transition-all"
                 >
                   Limpar Filtros
                 </button>
@@ -2288,6 +2365,8 @@ const App = () => {
                     <p className="text-[10px] font-black text-indigo-600 uppercase mb-3 tracking-widest">Endereço</p>
                     <div className="space-y-2">
                       {currentOrg?.address && <p className="font-bold text-slate-900">{currentOrg.address}</p>}
+                      {currentOrg?.neighborhood && <p className="text-sm font-bold text-slate-600">{currentOrg.neighborhood}</p>}
+                      {currentOrg?.complement && <p className="text-sm font-bold text-slate-500">{currentOrg.complement}</p>}
                       {(currentOrg?.city || currentOrg?.state || currentOrg?.zip_code) && (
                         <p className="text-sm font-bold text-slate-600">
                           {currentOrg?.city && <span>{currentOrg.city}</span>}
@@ -2295,7 +2374,7 @@ const App = () => {
                           {currentOrg?.zip_code && <span>{currentOrg.city || currentOrg.state ? ' - ' : ''}{currentOrg.zip_code}</span>}
                         </p>
                       )}
-                      {!currentOrg?.address && !currentOrg?.city && !currentOrg?.state && !currentOrg?.zip_code && (
+                      {!currentOrg?.address && !currentOrg?.neighborhood && !currentOrg?.complement && !currentOrg?.city && !currentOrg?.state && !currentOrg?.zip_code && (
                         <p className="text-slate-400 italic">Não configurado</p>
                       )}
                     </div>
@@ -2317,12 +2396,12 @@ const App = () => {
                     </div>
                     <div>
                       <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">CNPJ</label>
-                      <input name="cnpj" defaultValue={currentOrg?.cnpj || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-mono outline-none focus:border-indigo-600 transition-all" placeholder="XX.XXX.XXX/XXXX-XX" />
+                      <input name="cnpj" defaultValue={currentOrg?.cnpj || ''} onChange={e => e.target.value = maskCnpj(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-mono outline-none focus:border-indigo-600 transition-all" placeholder="XX.XXX.XXX/XXXX-XX" maxLength={18} />
                     </div>
 
                     <div>
                       <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Telefone</label>
-                      <input name="phone" type="tel" defaultValue={currentOrg?.phone || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="+55 11 98765-4321" />
+                      <input name="phone" type="tel" defaultValue={currentOrg?.phone || ''} onChange={e => e.target.value = maskPhone(e.target.value)} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="(11) 98765-4321" maxLength={15} />
                     </div>
                     <div>
                       <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Email</label>
@@ -2335,7 +2414,7 @@ const App = () => {
                     </div>
                     <div>
                       <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Website</label>
-                      <input name="website" type="url" defaultValue={currentOrg?.website || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="https://www.empresa.com.br" />
+                      <input name="website" type="text" defaultValue={currentOrg?.website || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="www.empresa.com.br" />
                     </div>
                   </div>
 
@@ -2343,6 +2422,15 @@ const App = () => {
                     <div className="md:col-span-2">
                       <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Endereço (Rua, Número)</label>
                       <input name="address" defaultValue={currentOrg?.address || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Rua Principal, 123" />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Bairro</label>
+                      <input name="neighborhood" defaultValue={currentOrg?.neighborhood || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Centro" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Complemento</label>
+                      <input name="complement" defaultValue={currentOrg?.complement || ''} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Sala 10, Apto 2B" />
                     </div>
 
                     <div>
@@ -2360,10 +2448,10 @@ const App = () => {
                   </div>
 
                   <div className="flex gap-3">
-                    <button type="button" onClick={() => setIsEditingCompany(false)} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase hover:text-slate-600 transition-colors">Cancelar</button>
+                    <button type="button" onClick={() => setIsEditingCompany(false)} className="flex-1 py-4 font-black text-xs text-rose-500 uppercase hover:text-rose-700 transition-colors">Cancelar</button>
                     <button disabled={isSaving} type="submit" className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                       {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                      {isSaving ? 'SALVANDO...' : 'GUARDAR'}
+                      {isSaving ? 'SALVANDO...' : 'SALVAR'}
                     </button>
                   </div>
                 </form>
@@ -2455,14 +2543,14 @@ const App = () => {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4">
-                  {!editingItem && <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Inicial</label><input required name="quantity" type="number" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold transition-all" placeholder="0" /></div>}
+                  {!editingItem && <div><label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Estoque Inicial</label><input required name="quantity" type="number" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold transition-all" placeholder="0" /></div>}
                 </div>
             </div>
             <button disabled={isSaving} type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl mt-4 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2">
                 {isSaving ? <Loader2 size={18} className="animate-spin"/> : <Save size={18}/>}
                 {isSaving ? 'SALVANDO...' : 'CONFIRMAR E SALVAR'}
             </button>
-            <button type="button" onClick={() => { setModalType(null); setEditingItem(null); setItemImageFile(null); setItemImagePreview(null); }} className="w-full py-2 font-black text-[10px] uppercase text-slate-300 transition-colors hover:text-slate-400">Cancelar</button>
+            <button type="button" onClick={() => { setModalType(null); setEditingItem(null); setItemImageFile(null); setItemImagePreview(null); }} className="w-full py-2 font-black text-[10px] uppercase text-rose-400 transition-colors hover:text-rose-600">Cancelar</button>
           </form>
         </div>
       )}
@@ -2493,7 +2581,7 @@ const App = () => {
             <h3 className="text-2xl font-black uppercase tracking-tighter">Nova Categoria</h3>
             <input required name="name" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Ex: Hidráulica" autoFocus />
             {categoryError && <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-100 rounded-xl p-3">{categoryError}</p>}
-            <div className="flex gap-3"><button type="button" onClick={() => { setModalType(null); setCategoryError(''); }} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Voltar</button><button type="submit" disabled={isSaving} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all disabled:opacity-60">{isSaving ? 'Salvando...' : 'Salvar'}</button></div>
+            <div className="flex gap-3"><button type="button" onClick={() => { setModalType(null); setCategoryError(''); }} className="flex-1 py-4 font-black text-xs text-rose-500 uppercase hover:text-rose-700 transition-colors">Voltar</button><button type="submit" disabled={isSaving} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all disabled:opacity-60">{isSaving ? 'Salvando...' : 'Salvar'}</button></div>
           </form>
         </div>
       )}
@@ -2509,7 +2597,7 @@ const App = () => {
             </div>
             <input required name="name" defaultValue={editingCategory.name} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold uppercase outline-none focus:border-indigo-600 transition-all" placeholder="Novo nome" autoFocus />
             <div className="flex gap-3">
-              <button type="button" onClick={() => { setModalType(null); setEditingCategory(null); }} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Cancelar</button>
+              <button type="button" onClick={() => { setModalType(null); setEditingCategory(null); }} className="flex-1 py-4 font-black text-xs text-rose-500 uppercase hover:text-rose-700 transition-colors">Cancelar</button>
               <button type="submit" disabled={isSaving} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-indigo-700 transition-all disabled:opacity-60">{isSaving ? 'Salvando...' : 'Renomear'}</button>
             </div>
           </form>
@@ -2676,6 +2764,45 @@ const App = () => {
                 {isSaving ? 'PROCESSANDO...' : 'CRIAR REQUISIÇÃO'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Modal de Alteração de Senha */}
+      {modalType === 'change-password' && changingPasswordFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl p-10 w-full max-w-md space-y-6 animate-in zoom-in-95 duration-200 relative">
+            <button type="button" onClick={() => { setModalType(null); setChangingPasswordFor(null); setLoginError(null); }} className="absolute top-8 right-8 text-slate-300 hover:text-slate-500 transition-colors"><X size={24}/></button>
+            <div className="text-center">
+              <div className="w-16 h-16 bg-amber-50 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-amber-100">
+                <KeyRound size={28} className="text-amber-500" />
+              </div>
+              <h2 className="text-2xl font-black uppercase tracking-tighter">Alterar Senha</h2>
+              <p className="text-[10px] text-slate-500 font-bold uppercase mt-2 tracking-widest">
+                {changingPasswordFor.id === currentProfile?.id ? 'Sua nova senha de acesso' : `Membro: ${changingPasswordFor.name.toUpperCase()}`}
+              </p>
+            </div>
+            <form onSubmit={handleChangePassword} className="space-y-4">
+              {loginError && (
+                <div className={`p-4 ${loginError.type === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'} border rounded-xl text-[10px] font-black uppercase leading-relaxed flex gap-3 items-start`}>
+                  <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                  {loginError.message}
+                </div>
+              )}
+              <div className="relative">
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Nova Senha</label>
+                <input required type={showNewPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={6} className="w-full p-4 pr-14 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Mínimo 6 caracteres" />
+                <button type="button" onClick={() => setShowNewPassword(p => !p)} className="absolute right-4 top-[52px] -translate-y-1/2 text-slate-400 hover:text-indigo-600 transition-colors">{showNewPassword ? <EyeOff size={18}/> : <Eye size={18}/>}</button>
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">Confirmar Senha</label>
+                <input required type={showNewPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} minLength={6} className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-bold outline-none focus:border-indigo-600 transition-all" placeholder="Digite novamente" />
+              </div>
+              <button disabled={isSaving} type="submit" className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-indigo-700 transition-all flex items-center justify-center gap-2">
+                {isSaving ? <Loader2 size={18} className="animate-spin"/> : <KeyRound size={18}/>}
+                {isSaving ? 'Salvando...' : 'Confirmar Alteração'}
+              </button>
+            </form>
+          </div>
         </div>
       )}
 
